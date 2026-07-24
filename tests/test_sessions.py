@@ -38,6 +38,19 @@ class LaunchSessionTests(unittest.TestCase):
         }
         self.assertEqual(sessions._matching_pids(session, processes, {10, 11}), [10])
 
+    def test_exact_executable_match_does_not_require_open_prefix_handle(self) -> None:
+        session = {
+            "executable": "/library/The Binding of Isaac Rebirth/isaac-ng.exe",
+            "install_dir": "/library/The Binding of Isaac Rebirth",
+            "prefix": str(self.bottle.prefix),
+            "pids": [],
+        }
+        processes = {
+            10: r"C:\Program Files (x86)\Steam\steamapps\common\The Binding of Isaac Rebirth\isaac-ng.exe",
+            11: r"C:\games\isaac-ng.exe.backup",
+        }
+        self.assertEqual(sessions._matching_pids(session, processes, set()), [10])
+
     def test_reconcile_and_stop_one_process(self) -> None:
         proc = subprocess.Popen(["/bin/sleep", "30"], cwd=self.bottle.prefix)
         try:

@@ -126,16 +126,17 @@ class SteamLaunchTests(unittest.TestCase):
             patch.object(steam, "stop_session", return_value=(session, [101])) as stop,
             patch.object(steam, "_terminate_prefix_server_processes", return_value=[303]) as terminate_server,
             patch.object(steam, "_terminate_orphaned_prefix_processes", return_value=[202]) as terminate,
-            patch.object(steam, "_terminate_stale_macos_wineserver", return_value=(False, "")),
+            patch.object(steam, "_process_command", return_value="wineserver"),
         ):
             code, message, targets = steam.kill_nase_wine_processes(current_bottle=current)
 
         self.assertEqual(code, 0)
         self.assertEqual(set(targets), {str(managed_prefix), str(external_prefix)})
-        self.assertIn("Stopped 3 Wine/game processes", message)
+        self.assertIn("Stopped 2 Wine/game processes", message)
+        self.assertIn("Stopped 2 Wine servers", message)
         stop.assert_called_once_with("launch_test")
         self.assertEqual(terminate_server.call_count, 2)
-        self.assertEqual(terminate.call_count, 2)
+        terminate.assert_not_called()
 
 
 if __name__ == "__main__":

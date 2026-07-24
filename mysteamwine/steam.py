@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
 import shutil
@@ -189,6 +190,42 @@ def _terminate_orphaned_prefix_processes(prefix: Path) -> list[int]:
         except ProcessLookupError:
             pass
     return stopped
+
+
+def _terminate_managed_prefix(prefix: Path) -> tuple[set[int], bool]:
+    """Stop one prefix with a fast server scan and a deep-scan fallback."""
+    try:
+        stopped = set(_terminate_prefix_server_processes(prefix))
+    except (OSError, subprocess.TimeoutExpired):
+        stopped = set()
+    if stopped:
+        return stopped, any("wineserver" in _process_command(pid).lower() for pid in stopped)
+
+    try:
+        stopped.update(_terminate_orphaned_prefix_processes(prefix))
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    if stopped:
+        return stopped, False
+
+    try:
+        recovered, _ = _terminate_stale_macos_wineserver(prefix)
+    except (OSError, subprocess.TimeoutExpired):
+        recovered = False
+    return stopped, recovered
+
+
+def _process_command(pid: int) -> str:
+    try:
+        return subprocess.run(
+            ["/bin/ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        ).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
 
 
 def native_macos_steam_is_running() -> bool:
@@ -547,16 +584,19 @@ def kill_nase_wine_processes(*, current_bottle: Bottle) -> tuple[int, str, list[
         _, stopped_pids = stop_session(session_id)
         stopped_session_pids.update(stopped_pids)
 
+    sorted_prefixes = sorted(prefixes, key=lambda path: str(path).casefold())
+    targets = [str(prefix) for prefix in sorted_prefixes]
     stopped_prefix_pids: set[int] = set()
     recovered_servers = 0
-    targets: list[str] = []
-    for prefix in sorted(prefixes, key=lambda path: str(path).casefold()):
-        targets.append(str(prefix))
-        stopped_prefix_pids.update(_terminate_prefix_server_processes(prefix))
-        stopped_prefix_pids.update(_terminate_orphaned_prefix_processes(prefix))
-        recovered, _ = _terminate_stale_macos_wineserver(prefix)
-        if recovered:
-            recovered_servers += 1
+    if sorted_prefixes:
+        # Prefix probes can each wait on lsof. Run them concurrently so the
+        # emergency stop duration is bounded by the slowest target rather than
+        # growing linearly with every compatibility profile.
+        with ThreadPoolExecutor(max_workers=min(len(sorted_prefixes), 16)) as executor:
+            for stopped, recovered in executor.map(_terminate_managed_prefix, sorted_prefixes):
+                stopped_prefix_pids.update(stopped)
+                if recovered:
+                    recovered_servers += 1
 
     details = [
         f"Checked {len(targets)} NASE prefix{'es' if len(targets) != 1 else ''}.",

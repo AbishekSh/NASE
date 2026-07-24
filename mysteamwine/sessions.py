@@ -143,14 +143,17 @@ def _matching_pids(
     matches: set[int] = {pid for pid in known if pid in processes and pid in allowed}
 
     for pid, command in processes.items():
-        if pid not in allowed:
-            continue
         normalized = command.replace("\\", "/").lower()
         executable_pattern = rf"(?:^|/){re.escape(executable_name)}(?:\s|$)" if executable_name else None
         install_pattern = rf"^c:/.*?/{re.escape(install_name)}/" if install_name else None
-        if executable_pattern and re.search(executable_pattern, normalized):
+        exact_executable_match = bool(executable_pattern and re.search(executable_pattern, normalized))
+        # Wine clients do not reliably retain an open file inside WINEPREFIX,
+        # especially after Steam hands control to the game. An exact executable
+        # name from the launch record is still a strong user-process identity;
+        # keep the broader install-directory heuristic prefix-bound.
+        if exact_executable_match:
             matches.add(pid)
-        elif install_pattern and re.search(install_pattern, normalized) and ".exe" in normalized:
+        elif pid in allowed and install_pattern and re.search(install_pattern, normalized) and ".exe" in normalized:
             matches.add(pid)
     return sorted(matches)
 
