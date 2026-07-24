@@ -101,6 +101,71 @@ class LaunchSessionTests(unittest.TestCase):
             self.assertEqual(owned["steam_cleanup_status"], "shutdown-requested")
             shutdown.assert_called_once()
 
+    def test_observed_game_exits_without_waiting_for_launch_grace(self) -> None:
+        with (
+            patch.object(sessions, "_registry_path", return_value=self.registry),
+            patch.object(sessions, "_processes", return_value={}),
+            patch.object(sessions, "_prefix_pids", return_value=set()),
+        ):
+            session = sessions.create_session(
+                bottle=self.bottle,
+                appid="quick-exit",
+                game="Quick Exit Test",
+                executable=Path("/games/test.exe"),
+                install_dir=Path("/games"),
+                graphics_backend="dxmt",
+                strategy="steam",
+                steam_started_by_nase=True,
+            )
+            last_seen = time.time() - sessions.PROCESS_EXIT_GRACE_SECONDS - 1
+            sessions.update_session(session["session_id"], status="running", last_seen_at=last_seen)
+
+            reconciled = sessions.reconcile_sessions()
+
+            updated = next(item for item in reconciled if item["session_id"] == session["session_id"])
+            self.assertEqual(updated["status"], "exited")
+            self.assertIn("Cloud", updated["message"])
+            self.assertGreaterEqual(
+                updated["steam_cleanup_after"],
+                time.time() + sessions.STEAM_CLEANUP_GRACE_SECONDS - 1,
+            )
+
+    def test_recent_cloud_log_defers_owned_steam_shutdown(self) -> None:
+        cloud_log = self.bottle.prefix / "drive_c" / "Program Files (x86)" / "Steam" / "logs" / "cloud_log.txt"
+        cloud_log.parent.mkdir(parents=True)
+        cloud_log.write_text("Cloud sync started\n", encoding="utf-8")
+        with (
+            patch.object(sessions, "_registry_path", return_value=self.registry),
+            patch.object(sessions, "_processes", return_value={}),
+            patch.object(sessions, "_prefix_pids", return_value=set()),
+            patch.object(sessions, "steam_is_running", return_value=True),
+            patch.object(sessions, "_request_steam_shutdown", return_value=True) as shutdown,
+        ):
+            session = sessions.create_session(
+                bottle=self.bottle,
+                appid="cloud-sync",
+                game="Cloud Sync Test",
+                executable=Path("/games/test.exe"),
+                install_dir=Path("/games"),
+                graphics_backend="dxmt",
+                strategy="steam",
+                wine_path=Path("/usr/local/bin/wine64"),
+                steam_started_by_nase=True,
+            )
+            sessions.update_session(
+                session["session_id"],
+                status="exited",
+                steam_cleanup_after=time.time() - 1,
+            )
+
+            reconciled = sessions.reconcile_sessions()
+
+            updated = next(item for item in reconciled if item["session_id"] == session["session_id"])
+            self.assertEqual(updated["steam_cleanup_status"], "pending")
+            self.assertIn("Cloud sync", updated["message"])
+            self.assertGreater(updated["steam_cleanup_after"], time.time())
+            shutdown.assert_not_called()
+
     def test_unobserved_game_leaves_owned_steam_open(self) -> None:
         with (
             patch.object(sessions, "_registry_path", return_value=self.registry),

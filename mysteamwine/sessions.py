@@ -15,7 +15,9 @@ from .bottle import Bottle, app_support_root
 
 ACTIVE_STATUSES = {"launching", "running", "stopping"}
 LAUNCH_GRACE_SECONDS = 45
-STEAM_CLEANUP_GRACE_SECONDS = 10
+PROCESS_EXIT_GRACE_SECONDS = 3
+STEAM_CLEANUP_GRACE_SECONDS = 60
+STEAM_CLOUD_QUIET_SECONDS = 30
 
 
 def _registry_path() -> Path:
@@ -84,7 +86,8 @@ def steam_is_running(prefix: str) -> bool:
 
 
 def _steam_has_active_work(prefix: str) -> bool:
-    steamapps = Path(prefix) / "drive_c" / "Program Files (x86)" / "Steam" / "steamapps"
+    steam_root = Path(prefix) / "drive_c" / "Program Files (x86)" / "Steam"
+    steamapps = steam_root / "steamapps"
     recent_cutoff = time.time() - 300
     for directory_name in ("downloading", "temp"):
         directory = steamapps / directory_name
@@ -98,6 +101,12 @@ def _steam_has_active_work(prefix: str) -> bool:
                     return True
         except OSError:
             return True
+    cloud_log = steam_root / "logs" / "cloud_log.txt"
+    try:
+        if cloud_log.is_file() and cloud_log.stat().st_mtime >= time.time() - STEAM_CLOUD_QUIET_SECONDS:
+            return True
+    except OSError:
+        return True
     return False
 
 
@@ -248,18 +257,23 @@ def reconcile_sessions() -> list[dict[str, Any]]:
             session["updated_at"] = now
             session["message"] = "Game process is running."
             changed = True
-        elif now - float(session.get("started_at") or now) >= LAUNCH_GRACE_SECONDS:
+        else:
+            last_seen_at = session.get("last_seen_at")
+            launch_grace_expired = now - float(session.get("started_at") or now) >= LAUNCH_GRACE_SECONDS
+            exit_grace_expired = isinstance(last_seen_at, (int, float)) and now - last_seen_at >= PROCESS_EXIT_GRACE_SECONDS
+            if not launch_grace_expired and not exit_grace_expired:
+                continue
             session["pids"] = []
             session["status"] = "exited"
             session["updated_at"] = now
-            if session.get("last_seen_at") is None:
+            if last_seen_at is None:
                 session["message"] = "Game process was not detected; Steam was left open for sign-in or setup."
                 session["steam_cleanup_after"] = None
                 if session.get("steam_started_by_nase"):
                     session["steam_cleanup_status"] = "launch-not-observed"
             else:
-                session["message"] = "Game process exited."
-            if session.get("last_seen_at") is not None and session.get("steam_started_by_nase"):
+                session["message"] = "Game exited; allowing Steam Cloud to finish syncing."
+            if last_seen_at is not None and session.get("steam_started_by_nase"):
                 session["steam_cleanup_after"] = now + STEAM_CLEANUP_GRACE_SECONDS
             changed = True
 
@@ -282,7 +296,7 @@ def reconcile_sessions() -> list[dict[str, Any]]:
             continue
         if _steam_has_active_work(prefix):
             session["steam_cleanup_after"] = now + 30
-            session["message"] = "Game exited; waiting for Steam to finish active work."
+            session["message"] = "Game exited; waiting for Steam downloads or Cloud sync to finish."
         elif not steam_is_running(prefix):
             session["steam_cleanup_status"] = "already-closed"
         elif _request_steam_shutdown(session):
