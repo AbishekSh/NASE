@@ -29,12 +29,12 @@ struct SteamWineApp: App {
     }
 
     private func appIconImage() -> NSImage? {
-        if let bundleURL = Bundle.module.url(forResource: "NASE App Logo", withExtension: "icns"),
+        if let bundleURL = naseResourceURL(named: "NASE App Logo", withExtension: "icns"),
            let image = NSImage(contentsOf: bundleURL) {
             return image
         }
 
-        if let bundleURL = Bundle.module.url(forResource: "NASE App Logo", withExtension: "png"),
+        if let bundleURL = naseResourceURL(named: "NASE App Logo", withExtension: "png"),
            let image = NSImage(contentsOf: bundleURL) {
             return image
         }

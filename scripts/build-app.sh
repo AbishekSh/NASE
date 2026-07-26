@@ -48,9 +48,13 @@ rm -f -- \
     "$python_framework/lib/python3.13/lib-dynload/_tkinter.cpython-313-darwin.so"
 
 resource_bundle=$(find "$bin_dir" -maxdepth 1 -type d -name 'SteamWineApp_*.bundle' -print -quit)
-if [[ -n "$resource_bundle" ]]; then
-    cp -R "$resource_bundle" "$app_path/Contents/Resources/"
+if [[ -z "$resource_bundle" ]]; then
+    print -u2 "SwiftPM resource bundle was not produced."
+    exit 1
 fi
+# NASE resolves this bundle explicitly from the standard signed-app resource
+# location instead of relying on SwiftPM's developer-machine build-path fallback.
+cp -R "$resource_bundle" "$app_path/Contents/Resources/"
 
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $bundle_id" "$app_path/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$app_path/Contents/Info.plist"

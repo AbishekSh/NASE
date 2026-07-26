@@ -152,8 +152,24 @@ struct EmptyLibraryState: View {
     }
 }
 
+func naseResourceURL(named name: String, withExtension fileExtension: String) -> URL? {
+    let bundleName = "SteamWineApp_SteamWineApp.bundle"
+    let candidates = [
+        Bundle.main.resourceURL?.appendingPathComponent(bundleName, isDirectory: true),
+        Bundle.main.bundleURL.appendingPathComponent(bundleName, isDirectory: true),
+    ].compactMap { $0 }
+
+    for candidate in candidates {
+        if let bundle = Bundle(url: candidate),
+           let resource = bundle.url(forResource: name, withExtension: fileExtension) {
+            return resource
+        }
+    }
+    return Bundle.main.url(forResource: name, withExtension: fileExtension)
+}
+
 func moduleNSImage(named name: String) -> NSImage? {
-    if let bundleURL = Bundle.module.url(forResource: name, withExtension: "png"),
+    if let bundleURL = naseResourceURL(named: name, withExtension: "png"),
        let image = NSImage(contentsOf: bundleURL) {
         return image
     }
