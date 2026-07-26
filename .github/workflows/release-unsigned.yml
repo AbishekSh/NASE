@@ -1,0 +1,40 @@
+name: Publish unsigned test release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Build unsigned DMG
+        env:
+          NASE_VERSION: ${{ github.ref_name }}
+          NASE_BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          export NASE_VERSION="${NASE_VERSION#v}"
+          scripts/build-app.sh
+          NASE_SKIP_LAUNCH_SMOKE=1 scripts/clean-machine-test.sh dist/NASE.app
+          shasum -a 256 "dist/NASE-$NASE_VERSION.dmg" > "dist/NASE-$NASE_VERSION.dmg.sha256"
+
+      - name: Publish GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/NASE-$version.dmg" \
+            "dist/NASE-$version.dmg.sha256" \
+            --target "$GITHUB_SHA" \
+            --title "NASE $version" \
+            --prerelease \
+            --generate-notes \
+            --notes "Unsigned Apple Silicon test build for macOS 14 or newer. If macOS blocks the first launch, open System Settings > Privacy & Security and choose Open Anyway."
