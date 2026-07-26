@@ -15,6 +15,9 @@ jobs:
       - name: Check out tagged source
         uses: actions/checkout@v4
 
+      - name: Select validated Xcode toolchain
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
+
       - name: Build unsigned DMG
         env:
           NASE_VERSION: ${{ github.ref_name }}
