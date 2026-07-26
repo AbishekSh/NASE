@@ -5,6 +5,11 @@ Python installation, or prior Wine experience. In fact, approaching NASE as a
 normal Mac user is especially useful: if setup feels confusing, that is
 important feedback.
 
+Running a moderated interface test? Use the
+[NASE Usability Test Guide](usability/README.md), which provides goal-based
+participant tasks and a structured observation sheet without revealing where
+controls are located.
+
 NASE is still in active development. Use test accounts where practical and
 avoid relying on it as the only copy of important game data or save files.
 
@@ -159,4 +164,3 @@ A test is useful even when a game does not run. NASE is succeeding when it:
 - recovers without forcing a full reinstall;
 - explains compatibility failures in understandable language;
 - leaves the tester in control of their data.
-

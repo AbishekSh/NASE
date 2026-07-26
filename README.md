@@ -14,8 +14,10 @@ NASE is built to feel like a launcher—not a collection of Wine scripts.
 > testers, but it is not yet a polished public release. Game compatibility
 > varies by title and graphics backend.
 
-Testing the app? Read the [NASE Beta Testing Guide](docs/BETA_TESTING.md) for
-installation instructions, suggested test scenarios, and a feedback template.
+Testing the app? Use the [NASE Usability Test Packet](docs/usability/README.md)
+for moderated interface sessions, or the
+[Beta Testing Guide](docs/BETA_TESTING.md) for installation instructions,
+compatibility checks, and bug reports.
 
 ## One Library, Every Source
 
