@@ -14,6 +14,9 @@ NASE is built to feel like a launcher—not a collection of Wine scripts.
 > testers, but it is not yet a polished public release. Game compatibility
 > varies by title and graphics backend.
 
+Testing the app? Read the [NASE Beta Testing Guide](docs/BETA_TESTING.md) for
+installation instructions, suggested test scenarios, and a feedback template.
+
 ## One Library, Every Source
 
 - Browse Steam, Epic, GOG, native Mac apps, and personal Windows games together.
