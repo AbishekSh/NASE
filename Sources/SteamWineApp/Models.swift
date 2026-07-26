@@ -452,6 +452,13 @@ struct LibraryGame: Identifiable, Hashable {
         self.launchURL = launchURL
         self.storeURL = storeURL
     }
+
+    static func importedPinID(runner: RunnerKind, url: URL) -> String {
+        let normalizedPath = url.standardizedFileURL.path
+            .precomposedStringWithCanonicalMapping
+            .lowercased()
+        return "\(runner.rawValue):path:\(normalizedPath)"
+    }
 }
 
 struct OperationCard: Identifiable {

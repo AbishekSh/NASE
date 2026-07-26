@@ -45,4 +45,24 @@ final class BackendBridgeTests: XCTestCase {
         let preview = BackendBridge.preview(.doctor, context: context)
         XCTAssertTrue(preview.hasPrefix(context.pythonCommand))
     }
+
+    func testImportedWineAppsUseFullPathIdentity() {
+        let first = LibraryGame.importedPinID(
+            runner: .wine,
+            url: URL(fileURLWithPath: "/Games/First/Game.exe")
+        )
+        let second = LibraryGame.importedPinID(
+            runner: .wine,
+            url: URL(fileURLWithPath: "/Games/Second/Game.exe")
+        )
+
+        XCTAssertNotEqual(first, second)
+        XCTAssertEqual(
+            first,
+            LibraryGame.importedPinID(
+                runner: .wine,
+                url: URL(fileURLWithPath: "/Games/First/../First/Game.exe")
+            )
+        )
+    }
 }

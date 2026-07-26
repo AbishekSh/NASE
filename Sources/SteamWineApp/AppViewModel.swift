@@ -22,6 +22,7 @@ private enum MemoryLimit {
 }
 
 private struct StoredLibraryItem: Codable {
+    let pinID: String?
     let title: String
     let runner: String
     let installPath: String
@@ -238,6 +239,7 @@ final class AppViewModel {
         gameSettingsByPinID = loadGameSettings()
         sourceHealth = loadSourceHealth()
         wineRuntimes = loadWineRuntimes()
+        migrateLegacyImportedAppIdentity()
         refreshWineRuntimes()
         selectedGame = nil
         if !UserDefaults.standard.bool(forKey: "onboarding.hasSeenSetupWizard") {
@@ -1382,6 +1384,7 @@ final class AppViewModel {
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         let installerGame = LibraryGame(
+            pinID: LibraryGame.importedPinID(runner: .wine, url: url),
             title: url.deletingPathExtension().lastPathComponent,
             runner: .wine,
             capsule: "Wine",
@@ -2667,6 +2670,7 @@ final class AppViewModel {
 
         let imported = panel.urls.map { url in
             LibraryGame(
+                pinID: LibraryGame.importedPinID(runner: .mac, url: url),
                 title: url.deletingPathExtension().lastPathComponent,
                 runner: .mac,
                 capsule: "macOS",
@@ -2698,6 +2702,7 @@ final class AppViewModel {
             let isExe = url.pathExtension.lowercased() == "exe"
             let launchURL = isExe ? url : promptForExecutable(in: url)
             return LibraryGame(
+                pinID: LibraryGame.importedPinID(runner: .wine, url: url),
                 title: url.deletingPathExtension().lastPathComponent,
                 runner: .wine,
                 capsule: "Wine",
@@ -2784,6 +2789,7 @@ final class AppViewModel {
                 }
             }
             return LibraryGame(
+                pinID: item.pinID ?? LibraryGame.importedPinID(runner: runner, url: installURL),
                 title: item.title,
                 runner: runner,
                 capsule: runner == .mac ? "macOS" : "Wine",
@@ -2801,6 +2807,7 @@ final class AppViewModel {
                 return nil
             }
             return StoredLibraryItem(
+                pinID: game.pinID,
                 title: game.title,
                 runner: game.runner.rawValue,
                 installPath: installURL.path,
@@ -2812,6 +2819,37 @@ final class AppViewModel {
         if let data = try? JSONEncoder().encode(stored) {
             UserDefaults.standard.set(data, forKey: key)
         }
+    }
+
+    private func migrateLegacyImportedAppIdentity() {
+        var settingsChanged = false
+        var pinsChanged = false
+        var migratedLegacyIDs = Set<String>()
+
+        for game in nativeApps + wineApps {
+            let legacyID = "\(game.runner.rawValue):\(game.title)"
+            guard legacyID != game.pinID, !migratedLegacyIDs.contains(legacyID) else { continue }
+
+            if gameSettingsByPinID[game.pinID] == nil, let legacySettings = gameSettingsByPinID.removeValue(forKey: legacyID) {
+                gameSettingsByPinID[game.pinID] = legacySettings
+                settingsChanged = true
+            }
+            if pinnedGameIDs.contains(legacyID) {
+                pinnedGameIDs = pinnedGameIDs.map { $0 == legacyID ? game.pinID : $0 }
+                pinsChanged = true
+            }
+            migratedLegacyIDs.insert(legacyID)
+        }
+
+        if settingsChanged {
+            persistGameSettings()
+        }
+        if pinsChanged {
+            pinnedGameIDs = Array(NSOrderedSet(array: pinnedGameIDs)) as? [String] ?? pinnedGameIDs
+            persistPinnedIDs()
+        }
+        persistStoredItems(nativeApps, forKey: LibraryStorageKey.nativeApps)
+        persistStoredItems(wineApps, forKey: LibraryStorageKey.wineApps)
     }
 
     private func persistPinnedIDs() {
