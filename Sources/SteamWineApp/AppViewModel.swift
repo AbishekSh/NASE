@@ -94,6 +94,7 @@ final class AppViewModel {
     var searchText: String = ""
     var rightPanelMessage: String = "Select a runner to see setup state and actions."
     var activityLog: String = "SwiftUI shell ready.\n"
+    private var provisioningProfiles: Set<GraphicsBackendOption> = []
     var isBusy: Bool {
         isDependencyBootstrapRunning
             || isActionRunning(.setupMetal)
@@ -251,7 +252,6 @@ final class AppViewModel {
         switch selectedRunner ?? .home {
         case .steam:
             var cards = [
-                OperationCard(kind: .setupMetal, title: "Finish Setup", detail: "Create the default bottle, install Steam, add DXMT, and open Steam.", symbolName: "hammer"),
                 OperationCard(kind: .doctor, title: "Inspect Environment", detail: "Check Wine, DXMT, Steam, and the current bottle when something feels off.", symbolName: "stethoscope"),
                 OperationCard(kind: .installDXMT, title: "Install DXMT", detail: "Reinstall DXMT into the current bottle or prefix from the configured DXMT source.", symbolName: "shippingbox.circle"),
                 OperationCard(kind: .installD3DMetal, title: "Install D3DMetal", detail: "Install a configured D3DMetal payload into the current bottle or prefix.", symbolName: "sparkle.magnifyingglass"),
@@ -274,7 +274,6 @@ final class AppViewModel {
                 OperationCard(kind: .winecfg, title: "Wine Configuration", detail: "Open winecfg for the current managed bottle or external prefix.", symbolName: "slider.horizontal.3"),
                 OperationCard(kind: .winetricks, title: "Winetricks", detail: "Install runtime components like corefonts, vcrun, or dotnet into the current target.", symbolName: "shippingbox"),
                 OperationCard(kind: .killWine, title: "Kill All Wine Processes", detail: "Force-stop Wine and game processes across every NASE bottle.", symbolName: "xmark.circle"),
-                OperationCard(kind: .setupMetal, title: "Finish Setup", detail: "Run the managed Metal setup flow again.", symbolName: "hammer"),
             ]
         case .home, .mac:
             return []
@@ -1035,6 +1034,7 @@ final class AppViewModel {
                     self.dependencyBootstrapPhase = .ready
                     self.dependencyBootstrapMessage = "Recommended DXMT environment is ready. Steam is opening for sign-in."
                     self.dependencyBootstrapProgress = 1
+                    UserDefaults.standard.set(true, forKey: LibraryStorageKey.didCompleteInitialSetup)
                     self.refreshRuntimeCenter()
                     self.refreshDependencyStatus()
                     self.rightPanelMessage = "Recommended gaming environment is ready."
@@ -1294,13 +1294,8 @@ final class AppViewModel {
             externalPrefix: nil,
             useExternalPrefix: false
         )
-        UserDefaults.standard.set(true, forKey: LibraryStorageKey.didCompleteInitialSetup)
         selectedRunner = .steam
-        executeDetached(
-            .setupMetal,
-            successMessage: "Setup Metal finished.",
-            context: effectiveBackendContext()
-        )
+        startRecommendedBootstrap(confirmRosettaLicense: true)
     }
 
     func installDXVKFromWizard(winePath: String, dxmtSource: String, dxvkSource: String, bottleName: String) {
@@ -1606,6 +1601,11 @@ final class AppViewModel {
     func launch(_ game: LibraryGame) {
         selectGame(game)
 
+        if let profile = requiredCompatibilityProfile(for: game),
+           ensureCompatibilityProfile(profile, beforeLaunching: game) {
+            return
+        }
+
         switch game.runner {
         case .steam:
             launchSteamGame(game)
@@ -1829,11 +1829,7 @@ final class AppViewModel {
             )
             return
         case .openSteam:
-            executeDetached(
-                .openSteam,
-                successMessage: "Opened Steam.",
-                context: effectiveBackendContext()
-            )
+            openDefaultSteam()
             return
         case .refreshGames:
             refreshSteamGames(announce: true)
@@ -1843,7 +1839,7 @@ final class AppViewModel {
                 rightPanelMessage = "Select a Steam game first."
                 return
             }
-            launchSteamGame(selectedGame)
+            launch(selectedGame)
             return
         }
 
@@ -2007,7 +2003,7 @@ final class AppViewModel {
         let context = effectiveBackendContext(backendContext.compatibilityContext(for: profile))
         executeDetached(
             .resetCompatibilityProfile(profile),
-            successMessage: "The dedicated \(profile.rawValue) bottle was removed. Shared games were kept.",
+            successMessage: "The \(profile.rawValue) profile was deleted. Shared games were kept.",
             context: context
         )
     }
@@ -2119,6 +2115,13 @@ final class AppViewModel {
 
     func compatibilityProfileIsReady(_ profile: GraphicsBackendOption) -> Bool {
         let context = backendContext.compatibilityContext(for: profile)
+        return compatibilityProfileIsReady(profile, context: context)
+    }
+
+    private func compatibilityProfileIsReady(
+        _ profile: GraphicsBackendOption,
+        context: BackendContext
+    ) -> Bool {
         let manifestURL = appSupportRootURL
             .appendingPathComponent("bottles", isDirectory: true)
             .appendingPathComponent(context.bottleName, isDirectory: true)
@@ -2296,30 +2299,14 @@ final class AppViewModel {
     private func performInitialSetupIfNeeded() {
         guard !UserDefaults.standard.bool(forKey: LibraryStorageKey.didCompleteInitialSetup) else { return }
 
-        let prefixExists = currentPrefixURL(for: backendContext).map { FileManager.default.fileExists(atPath: $0.path) } ?? false
-        if prefixExists {
+        if compatibilityProfileIsReady(.dxmt) {
             UserDefaults.standard.set(true, forKey: LibraryStorageKey.didCompleteInitialSetup)
             return
         }
 
-        let wineOkay = validateWinePath(backendContext.winePath).hasPrefix("OK:")
-        let winetricksOkay = detectedWinetricksPath() != nil
-        let dxmtOkay = validateDXMTSource(backendContext.dxmtSource).contains {
-            $0.hasPrefix("OK: DXMT payload folders look valid") || $0.hasPrefix("OK: DXMT source is a .tar.gz archive")
-        }
-
-        guard wineOkay, winetricksOkay, dxmtOkay else {
-            rightPanelMessage = "Finish your Wine runtime and DXMT setup in Settings, then the launcher can complete first launch automatically."
-            return
-        }
-
-        UserDefaults.standard.set(true, forKey: LibraryStorageKey.didCompleteInitialSetup)
         selectedRunner = .steam
-        executeDetached(
-            .setupMetal,
-            successMessage: "First-launch setup finished.",
-            context: effectiveBackendContext()
-        )
+        rightPanelMessage = "Set up the recommended DXMT profile to get started. Other profiles are created only when you use them."
+        isShowingSetupWizard = true
     }
 
     private func validateDXMTSource(_ path: String) -> [String] {
@@ -3473,6 +3460,70 @@ final class AppViewModel {
         )
     }
 
+    private func requiredCompatibilityProfile(for game: LibraryGame) -> GraphicsBackendOption? {
+        switch game.runner {
+        case .steam:
+            return settings(for: game).graphicsBackend
+        case .epic, .gog:
+            return game.installURL == nil ? nil : settings(for: game).graphicsBackend
+        case .home:
+            return underlyingGame(for: game).flatMap(requiredCompatibilityProfile)
+        case .mac, .wine:
+            return nil
+        }
+    }
+
+    /// Returns true when launch must pause while the selected profile is created.
+    private func ensureCompatibilityProfile(
+        _ profile: GraphicsBackendOption,
+        beforeLaunching game: LibraryGame
+    ) -> Bool {
+        let context = effectiveContext(for: game)
+        guard !compatibilityProfileIsReady(profile, context: context) else { return false }
+        guard !provisioningProfiles.contains(profile) else {
+            setLaunchStatus(.launching, for: game, message: "Preparing the \(profile.rawValue) profile…")
+            return true
+        }
+
+        provisioningProfiles.insert(profile)
+        setLaunchStatus(.launching, for: game, message: "Preparing the \(profile.rawValue) profile and Steam…")
+        rightPanelMessage = "Creating \(profile.rawValue) on demand. Shared game files will be reused."
+        executeDetached(
+            .setupCompatibilityProfile(profile),
+            successMessage: "\(profile.rawValue) is ready.",
+            context: context,
+            game: game
+        ) {
+            self.provisioningProfiles.remove(profile)
+            self.launch(game)
+        }
+        return true
+    }
+
+    private func openDefaultSteam() {
+        let profile = GraphicsBackendOption.dxmt
+        let context = effectiveBackendContext(backendContext.compatibilityContext(for: profile))
+        guard !compatibilityProfileIsReady(profile) else {
+            executeDetached(.openSteam, successMessage: "Opened Steam.", context: context)
+            return
+        }
+        guard !provisioningProfiles.contains(profile) else {
+            rightPanelMessage = "The default DXMT profile is already being prepared."
+            return
+        }
+
+        provisioningProfiles.insert(profile)
+        rightPanelMessage = "Creating the default DXMT profile and Steam…"
+        executeDetached(
+            .setupCompatibilityProfile(profile),
+            successMessage: "DXMT is ready.",
+            context: context
+        ) {
+            self.provisioningProfiles.remove(profile)
+            self.executeDetached(.openSteam, successMessage: "Opened Steam.", context: context)
+        }
+    }
+
     private func shouldUseDirectSteamLaunch(for settings: StoredGameSettings) -> Bool {
         !settings.launchArguments.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         || !settings.workingDirectoryPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -3500,7 +3551,13 @@ final class AppViewModel {
         )
     }
 
-    private func executeDetached(_ action: BackendAction, successMessage: String, context: BackendContext, game: LibraryGame? = nil) {
+    private func executeDetached(
+        _ action: BackendAction,
+        successMessage: String,
+        context: BackendContext,
+        game: LibraryGame? = nil,
+        onSuccess: (() -> Void)? = nil
+    ) {
         let preview = BackendBridge.preview(action, context: context)
         appendLog("== Action ==\n\(preview)")
         rightPanelMessage = "Launching..."
@@ -3597,6 +3654,7 @@ final class AppViewModel {
                             )
                         }
                     }
+                    onSuccess?()
                 }
             } catch {
                 await MainActor.run {
@@ -3612,6 +3670,9 @@ final class AppViewModel {
                     }
                     if case .installRuntime = action {
                         self.installingRuntimeID = nil
+                    }
+                    if case .setupCompatibilityProfile(let profile) = action {
+                        self.provisioningProfiles.remove(profile)
                     }
                     if let game, actionLaunchGeneration == self.launchStateGeneration {
                         self.setLaunchStatus(.failed, for: game, message: self.launchFailureSummary(from: fullError))

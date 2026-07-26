@@ -293,7 +293,8 @@ struct SetupWizardSheet: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(!model.setupWizardCanRun(winePath: winePath, dxmtSource: dxmtSource, bottleName: bottleName) || model.isBusy)
 
-                    if let job = model.currentOperationJob, job.action == "Setup Metal" {
+                    if let job = model.currentOperationJob,
+                       job.action == "Set Up Compatibility Profile" || job.action == "Setup Metal" {
                         VStack(alignment: .leading, spacing: 10) {
                             Text(job.message)
                                 .font(.subheadline.weight(.semibold))

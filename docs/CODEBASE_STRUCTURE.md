@@ -289,17 +289,21 @@ These should be optional lint/test tools. They should not become a runtime depen
 
 ### Steam Library Attachment
 
-1. A ready managed profile requests one or more stable library IDs, or all canonical libraries.
-2. The backend refuses external targets, missing Steam installations, and profile bottles whose Steam process is running.
-3. A per-bottle file lock serializes attachment jobs.
-4. Existing VDF entries are preserved; new host libraries are added as Wine `Z:` paths without copying game content.
-5. The original `libraryfolders.vdf` receives a timestamped backup, the replacement is atomic, and parsed host paths are verified after writing.
-6. Only the target profile's Steam configuration changes. Its prefix, graphics payload, shader cache, and logs remain independent from every other profile.
+1. Discovery creates and registers the profile-independent NASE Steam library at `~/Library/Application Support/NASE/SteamLibrary`.
+2. A ready managed profile requests one or more stable library IDs, or all canonical libraries.
+3. The backend refuses external targets, missing Steam installations, and profile bottles whose Steam process is running.
+4. A per-bottle file lock serializes attachment jobs.
+5. Existing VDF entries are preserved; new host libraries are added as Wine `Z:` paths without copying game content.
+6. The original `libraryfolders.vdf` receives a timestamped backup, the replacement is atomic, and parsed host paths are verified after writing.
+7. Only the target profile's Steam configuration changes. Its prefix, graphics payload, shader cache, and logs remain independent from every other profile.
 
 ### Setup Flow
 
-1. SwiftUI calls `BackendBridge.executeStreaming(.setupMetal, context: ...)`.
-2. The bridge runs `python3 mysteamwine.py ... --jsonl setup-metal --dxmt-source ... --no-wait`.
+1. Recommended setup creates only the dedicated DXMT profile and installs Steam there.
+2. Selecting Plain Wine, D3DMetal, or DXVK for a launch checks that profile's manifest.
+3. If it is absent, SwiftUI streams `setup-compatibility-profile`, then resumes the original launch automatically.
+4. Profile setup installs the pinned Wine/renderer combination, installs its private Steam client, and attaches the shared NASE Steam library.
+5. Settings can delete an unused profile. The backend refuses deletion while its private Steam library still contains game manifests, preventing accidental game loss.
 
 ### Jobs, rollback, and repair
 

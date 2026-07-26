@@ -40,6 +40,14 @@ class SteamLibraryRegistryTests(unittest.TestCase):
         )
         self.primary = self.bottle.prefix / "drive_c" / "Program Files (x86)" / "Steam" / "steamapps"
         self.external = self.root / "SharedSteam" / "steamapps"
+        self.managed_shared = self.root / "NASESteamLibrary"
+        self.shared_library_patch = patch.object(
+            steam_libraries,
+            "managed_shared_library",
+            return_value=self.managed_shared,
+        )
+        self.shared_library_patch.start()
+        self.addCleanup(self.shared_library_patch.stop)
 
     def test_discovers_deduplicates_and_prefers_installed_location(self) -> None:
         write_manifest(self.primary, "100", "Example Game", "Example Game")
@@ -61,7 +69,7 @@ class SteamLibraryRegistryTests(unittest.TestCase):
         with patch.object(steam_libraries, "list_bottle_roots", return_value=[]):
             registry = steam_libraries.discover_steam_libraries(self.bottle)
 
-        self.assertEqual(len(registry["libraries"]), 2)
+        self.assertEqual(len(registry["libraries"]), 3)
         self.assertEqual(len(registry["apps"]), 1)
         app = registry["apps"][0]
         self.assertEqual(len(app["locations"]), 2)
@@ -134,6 +142,14 @@ class SteamLibraryRegistryTests(unittest.TestCase):
         self.assertTrue(destination.is_file())
         self.assertFalse(destination.with_suffix(".tmp").exists())
         self.assertEqual(steam_libraries.installed_games(registry)[0]["appid"], "300")
+
+    def test_managed_shared_library_is_created_and_registered(self) -> None:
+        with patch.object(steam_libraries, "list_bottle_roots", return_value=[]):
+            registry = steam_libraries.discover_steam_libraries(self.bottle)
+
+        managed = next(library for library in registry["libraries"] if library.get("managed"))
+        self.assertEqual(managed["path"], str(self.managed_shared.resolve()))
+        self.assertTrue((self.managed_shared / "steamapps").is_dir())
 
     def test_attach_shares_files_without_copying_them_into_profile(self) -> None:
         write_manifest(self.external, "400", "Shared Game", "Shared Game")

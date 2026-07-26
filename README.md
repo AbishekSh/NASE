@@ -42,6 +42,11 @@ Profiles remain isolated, versioned, and repairable. NASE validates the selected
 Wine engine and renderer together instead of treating graphics runtimes as
 interchangeable DLL packs.
 
+NASE creates only the recommended DXMT Steam profile during initial setup.
+Plain Wine, D3DMetal, and DXVK profiles are provisioned automatically the first
+time a game selects them. Unused profiles can be deleted from Settings and
+recreated later without downloading games again.
+
 ## Setup That Belongs to the App
 
 The release build bundles a signed private Python 3.13 runtime. NASE downloads
@@ -74,6 +79,9 @@ logs available inside the app.
 
 - **Isolated profiles:** Prefixes, renderers, shader caches, and logs stay
   separated while games can remain in shared host libraries.
+- **One shared Steam library:** Every profile attaches
+  `~/Library/Application Support/NASE/SteamLibrary`, so large game files do not
+  need a copy per graphics backend.
 - **Safe Steam ownership:** Only one profile can run Windows Steam against a
   shared library at a time, preventing competing clients from updating the same
   files.

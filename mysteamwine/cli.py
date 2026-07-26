@@ -53,6 +53,7 @@ from .steam import (
     probe_steam_stability,
     run_game_executable,
     steam_client_is_ready,
+    steam_prefix_root,
     validate_executable_compatibility,
     run_steam,
     steam_windows_path,
@@ -873,6 +874,19 @@ def cmd_reset_compatibility_profile(args: argparse.Namespace) -> None:
     if not bottle.root.exists():
         message = f"{profile.name} is already reset."
     else:
+        primary_steamapps = steam_prefix_root(bottle) / "steamapps"
+        local_manifests = sorted(primary_steamapps.glob("appmanifest_*.acf"))
+        if local_manifests:
+            appids = ", ".join(path.stem.removeprefix("appmanifest_") for path in local_manifests)
+            _json_error(
+                args,
+                action=action,
+                message=(
+                    f"Refusing to delete {bottle.name}: it still contains locally stored Steam games "
+                    f"({appids}). Move them to the NASE Shared Library in Steam's Storage settings, "
+                    "then try again."
+                ),
+            )
         wine64 = _require_wine64(args)
         kill_wine_processes(bottle=bottle, wine64_path=wine64)
         shutil.rmtree(bottle.root)

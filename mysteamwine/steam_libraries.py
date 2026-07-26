@@ -22,6 +22,11 @@ def registry_path() -> Path:
     return app_support_root() / "steam-libraries.json"
 
 
+def managed_shared_library() -> Path:
+    """Return the profile-independent Steam library owned by NASE."""
+    return app_support_root() / "SteamLibrary"
+
+
 def _library_id(path: Path) -> str:
     return "library_" + hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:16]
 
@@ -70,6 +75,22 @@ def discover_steam_libraries(current: Bottle, registered: dict[str, Any] | None 
     libraries: dict[str, dict[str, Any]] = {}
     locations_by_app: dict[str, list[dict[str, Any]]] = {}
     warnings: list[str] = []
+
+    # Every compatibility profile attaches this external library. Keeping it
+    # outside bottle roots lets profiles be deleted without deleting games.
+    shared_root = _normalized(managed_shared_library())
+    shared_steamapps = shared_root / "steamapps"
+    shared_steamapps.mkdir(parents=True, exist_ok=True)
+    shared_library_id = _library_id(shared_root)
+    libraries[shared_library_id] = {
+        "library_id": shared_library_id,
+        "path": str(shared_root),
+        "steamapps_path": str(shared_steamapps),
+        "exists": True,
+        "writable": os.access(shared_steamapps, os.W_OK),
+        "referenced_by": [],
+        "managed": True,
+    }
 
     # Registered libraries outlive any one profile. Seed discovery with them so
     # removing or switching the active bottle cannot make installed games vanish.

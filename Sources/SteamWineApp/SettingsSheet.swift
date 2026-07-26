@@ -203,15 +203,15 @@ struct SettingsSheet: View {
         } message: {
             Text("NASE will copy the detected Game Porting Toolkit installation into its managed runtime folder. Continue only if you have read and accept Apple’s license included with the Toolkit.")
         }
-        .alert("Reset Compatibility Profile?", isPresented: $showProfileResetConfirmation) {
+        .alert("Delete Compatibility Profile?", isPresented: $showProfileResetConfirmation) {
             Button("Cancel", role: .cancel) { pendingProfileReset = nil }
-            Button("Reset Bottle", role: .destructive) {
+            Button("Delete Profile", role: .destructive) {
                 guard let profile = pendingProfileReset else { return }
                 model.resetCompatibilityProfile(profile)
                 pendingProfileReset = nil
             }
         } message: {
-            Text("This removes the profile's Windows prefix, Steam configuration, renderer files, caches, and logs. Shared Steam game files are kept.")
+            Text("This removes the profile's private Steam installation, Windows prefix, renderer files, caches, and logs. Shared game files are kept, and NASE can recreate the profile the next time you use it.")
         }
         .alert("Change Shared Steam Login?", isPresented: $showSteamIdentityConfirmation) {
             Button("Cancel", role: .cancel) { pendingSteamIdentityAction = nil }
@@ -930,7 +930,7 @@ struct SettingsSheet: View {
                 Text("Compatibility Profiles")
                     .font(.headline)
                     .foregroundStyle(themeForeground)
-                Text("Each profile owns a separate bottle and a pinned runtime fingerprint.")
+                Text("DXMT is the default. Plain, D3DMetal, and DXVK profiles are created only when first used; all profiles reuse shared game files.")
                     .font(.caption)
                     .foregroundStyle(themeMutedForeground)
             }
@@ -977,6 +977,11 @@ struct SettingsSheet: View {
                                 .font(.caption2.weight(.semibold))
                                 .foregroundStyle(.green)
                         }
+                        if !isReady {
+                            Label("Created automatically on first launch", systemImage: "arrow.down.circle")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(themeMutedForeground)
+                        }
                         Text("Bottle: \(bottleName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Default" : bottleName)-\(profile.bottleSuffix)")
                             .font(.caption2.monospaced())
                             .foregroundStyle(themeMutedForeground)
@@ -987,7 +992,7 @@ struct SettingsSheet: View {
                             model.repairCompatibilityProfile(profile)
                         }
                         .disabled(model.isBusy)
-                        Button("Reset", role: .destructive) {
+                        Button("Delete", role: .destructive) {
                             pendingProfileReset = profile
                             showProfileResetConfirmation = true
                         }

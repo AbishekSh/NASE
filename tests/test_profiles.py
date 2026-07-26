@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from mysteamwine.bottle import Bottle
+import mysteamwine.cli as cli
 import mysteamwine.profiles as profiles
 
 
@@ -136,6 +137,31 @@ class CompatibilityProfileTests(unittest.TestCase):
         self.assertEqual(ready["setup_status"], "ready")
         self.assertNotIn("last_failure", ready)
         self.assertNotIn("active_job_id", ready)
+
+    def test_profile_delete_refuses_bottle_with_local_steam_games(self) -> None:
+        steamapps = (
+            self.bottle.prefix
+            / "drive_c"
+            / "Program Files (x86)"
+            / "Steam"
+            / "steamapps"
+        )
+        steamapps.mkdir(parents=True)
+        (steamapps / "appmanifest_250900.acf").write_text("", encoding="utf-8")
+        args = SimpleNamespace(
+            profile="dxmt-wine-stable-11-v1",
+            confirm=True,
+            prefix=None,
+            bottle=self.bottle.name,
+            json=False,
+            jsonl=False,
+        )
+
+        with (
+            patch.object(cli, "_resolve_bottle", return_value=self.bottle),
+            self.assertRaisesRegex(SystemExit, "Move them to the NASE Shared Library"),
+        ):
+            cli.cmd_reset_compatibility_profile(args)
 
     def test_import_migration_ignores_profiles_without_graphics_source(self) -> None:
         bottles_root = self.bottle.root / "bottles"
