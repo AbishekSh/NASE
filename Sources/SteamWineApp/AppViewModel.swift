@@ -1262,15 +1262,10 @@ final class AppViewModel {
     }
 
     func setupWizardCanRun(winePath: String, dxmtSource: String, bottleName: String) -> Bool {
-        let wineStatus = detectedWinePathStatus(winePath)
-        let winetricksStatus = detectedWinetricksStatus()
-        let dxmtStatuses = validateDXMTSource(dxmtSource)
         let cleanedBottle = bottleName.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        return wineStatus.hasPrefix("OK:")
-            && winetricksStatus.hasPrefix("OK:")
-            && dxmtStatuses.contains(where: { $0.hasPrefix("OK: DXMT payload folders look valid") || $0.hasPrefix("OK: DXMT source is a .tar.gz archive") })
+        return backendPreflightState == .ready
             && !cleanedBottle.isEmpty
+            && !isDependencyBootstrapRunning
     }
 
     func validateDXMTSourceForWizard(_ path: String) -> [String] {
@@ -1286,14 +1281,14 @@ final class AppViewModel {
     }
 
     func runSetupWizard(winePath: String, dxmtSource: String, dxvkSource: String, bottleName: String) {
-        applySettings(
-            winePath: winePath,
-            dxmtSource: dxmtSource,
-            dxvkSource: dxvkSource,
+        // Recommended setup owns its runtime selections. Do not persist the
+        // wizard's clean-machine placeholder paths before the managed runtime
+        // downloader has had a chance to replace them.
+        backendContext = backendContext.overridingTarget(
             bottleName: bottleName,
-            externalPrefix: nil,
-            useExternalPrefix: false
+            externalPrefix: nil
         )
+        backendContext.persist()
         selectedRunner = .steam
         startRecommendedBootstrap(confirmRosettaLicense: true)
     }

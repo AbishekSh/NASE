@@ -65,6 +65,9 @@ struct SetupWizardSheet: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
                         requirementsChecklist
+                        if model.dependencyBootstrapPhase != .idle {
+                            recommendedEnvironmentProgress
+                        }
                         stepBody
                     }
                     .padding(24)
@@ -128,15 +131,24 @@ struct SetupWizardSheet: View {
         case .welcome:
             wizardCard(title: "What this flow does", subtitle: "The wizard is built to get someone new to Wine unstuck quickly.") {
                 VStack(alignment: .leading, spacing: 12) {
-                    setupBullet("Detect Wine and tell you exactly what to install if it is missing.")
-                    setupBullet("Detect Winetricks and do the same.")
-                    setupBullet("Pick the DXMT payload we use for the managed Metal path.")
+                    setupBullet("Download and checksum-verify Wine Stable when it is missing.")
+                    setupBullet("Install NASE's pinned Winetricks and private GStreamer runtimes.")
+                    setupBullet("Download and select the verified DXMT payload automatically.")
                     setupBullet("Create a managed bottle under ~/Library/Application Support/NASE.")
                     setupBullet("Install Steam into that bottle and prepare it for launch.")
                     Button {
                         showRecommendedBootstrapConfirmation = true
                     } label: {
-                        Label("Install Recommended Environment", systemImage: "wand.and.stars")
+                        HStack(spacing: 8) {
+                            if model.isDependencyBootstrapRunning {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                            Label(
+                                model.isDependencyBootstrapRunning ? "Installing Recommended Environment…" : "Install Recommended Environment",
+                                systemImage: "wand.and.stars"
+                            )
+                        }
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(model.isBusy)
@@ -146,7 +158,7 @@ struct SetupWizardSheet: View {
             }
 
         case .wine:
-            wizardCard(title: "Wine Detection", subtitle: model.detectedWinePathStatus(winePath)) {
+            wizardCard(title: "Wine Detection", subtitle: managedWineStatus) {
                 VStack(alignment: .leading, spacing: 14) {
                     labeledField("Wine Path", text: $winePath) {
                         if let path = pickPath(canChooseFiles: true, canChooseDirectories: false) {
@@ -165,7 +177,7 @@ struct SetupWizardSheet: View {
             }
 
         case .winetricks:
-            wizardCard(title: "Winetricks Detection", subtitle: model.detectedWinetricksStatus()) {
+            wizardCard(title: "Winetricks Detection", subtitle: managedWinetricksStatus) {
                 guidanceBlock(
                     title: "Install Guidance",
                     lines: [
@@ -201,7 +213,7 @@ struct SetupWizardSheet: View {
                                     .controlSize(.small)
                             }
                         }
-                        statusBlock(lines: model.validateDXMTSourceForWizard(dxmtSource))
+                        statusBlock(lines: managedDXMTStatuses)
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
@@ -272,12 +284,12 @@ struct SetupWizardSheet: View {
             }
 
         case .steam:
-            wizardCard(title: "Steam Setup", subtitle: "Run the managed Steam + Metal setup flow using the values above.") {
+            wizardCard(title: "Steam Setup", subtitle: "NASE will download any missing managed components, then create the Steam + Metal environment.") {
                 VStack(alignment: .leading, spacing: 14) {
                     statusBlock(lines: [
-                        model.detectedWinePathStatus(winePath),
-                        model.detectedWinetricksStatus(),
-                    ] + model.validateDXMTSourceForWizard(dxmtSource))
+                        managedWineStatus,
+                        managedWinetricksStatus,
+                    ] + managedDXMTStatuses)
 
                     Button {
                         model.runSetupWizard(
@@ -287,7 +299,7 @@ struct SetupWizardSheet: View {
                             bottleName: bottleName
                         )
                     } label: {
-                        Label("Run Setup", systemImage: "hammer")
+                        Label("Install Recommended Environment", systemImage: "arrow.down.circle")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
@@ -354,6 +366,31 @@ struct SetupWizardSheet: View {
         }
     }
 
+    private var managedWineStatus: String {
+        let status = model.detectedWinePathStatus(winePath)
+        return status.hasPrefix("OK:")
+            ? status
+            : "READY TO INSTALL: NASE will download and select Wine Stable 11."
+    }
+
+    private var managedWinetricksStatus: String {
+        let status = model.detectedWinetricksStatus()
+        return status.hasPrefix("OK:")
+            ? status
+            : "READY TO INSTALL: NASE will download its pinned Winetricks script."
+    }
+
+    private var managedDXMTStatuses: [String] {
+        let statuses = model.validateDXMTSourceForWizard(dxmtSource)
+        if statuses.contains(where: {
+            $0.hasPrefix("OK: DXMT payload folders look valid")
+                || $0.hasPrefix("OK: DXMT source is a .tar.gz archive")
+        }) {
+            return statuses
+        }
+        return ["READY TO INSTALL: NASE will download, verify, and select DXMT 0.71."]
+    }
+
     private var previousStep: SetupWizardStep? {
         guard let index = orderedSteps.firstIndex(of: selectedStep), index > 0 else { return nil }
         return orderedSteps[index - 1]
@@ -393,6 +430,83 @@ struct SetupWizardSheet: View {
                 checklistRow(title: "Bottle", detail: bottleName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "FAIL: Bottle name is empty" : "OK: Bottle name is set to \(bottleName)")
                 checklistRow(title: "Steam Setup", detail: model.latestSetupResult == nil ? "PENDING: Run the setup step to install Steam into the managed bottle" : finishSubtitle)
             }
+        }
+    }
+
+    private var recommendedEnvironmentProgress: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                Group {
+                    if model.isDependencyBootstrapRunning {
+                        ProgressView()
+                            .controlSize(.regular)
+                    } else if model.dependencyBootstrapPhase == .ready {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(Color.green)
+                    } else {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(Color.orange)
+                    }
+                }
+                .font(.title2)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(recommendedEnvironmentProgressTitle)
+                        .font(.headline)
+                        .foregroundStyle(themeForeground)
+                    Text(model.dependencyBootstrapMessage)
+                        .font(.subheadline)
+                        .foregroundStyle(model.dependencyBootstrapPhase == .failed ? Color.red : themeMutedForeground)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                Text("\(Int((model.dependencyBootstrapProgress * 100).rounded()))%")
+                    .font(.system(.subheadline, design: .monospaced).weight(.semibold))
+                    .foregroundStyle(themeMutedForeground)
+            }
+
+            ProgressView(value: model.dependencyBootstrapProgress, total: 1)
+                .progressViewStyle(.linear)
+                .tint(model.dependencyBootstrapPhase == .failed ? Color.orange : themePrimary)
+                .accessibilityLabel("Recommended environment installation progress")
+                .accessibilityValue("\(Int((model.dependencyBootstrapProgress * 100).rounded())) percent")
+
+            if model.isDependencyBootstrapRunning {
+                Text("Keep NASE open while managed components are downloaded, verified, and installed.")
+                    .font(.caption)
+                    .foregroundStyle(themeMutedForeground)
+            } else if model.dependencyBootstrapPhase == .failed {
+                Button("Open Setup Logs") {
+                    model.openRecommendedBootstrapLogs()
+                }
+                .buttonStyle(.borderless)
+            }
+        }
+        .padding(16)
+        .background(themePanelRaised)
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(themePrimary.opacity(0.45), lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private var recommendedEnvironmentProgressTitle: String {
+        switch model.dependencyBootstrapPhase {
+        case .idle:
+            return "Recommended Environment"
+        case .checking:
+            return "Checking Downloads"
+        case .installing:
+            return "Downloading and Installing"
+        case .configuring:
+            return "Configuring Managed Runtimes"
+        case .profileSetup:
+            return "Preparing Steam"
+        case .ready:
+            return "Recommended Environment Ready"
+        case .failed:
+            return "Setup Needs Attention"
         }
     }
 
