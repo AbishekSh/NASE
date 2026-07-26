@@ -485,11 +485,26 @@ final class AppViewModel {
         }
     }
 
+    private func reconcileLaunchStateAfterHandoff(for game: LibraryGame, generation: Int) {
+        Task { [weak self] in
+            for delay in [1, 2, 3, 5] {
+                do {
+                    try await Task.sleep(for: .seconds(delay))
+                } catch {
+                    return
+                }
+                guard let self, generation == self.launchStateGeneration else { return }
+                self.refreshLaunchSessions()
+                if self.launchStatusByPinID[game.pinID]?.phase != .launching {
+                    return
+                }
+            }
+        }
+    }
+
     private func applyLaunchSessions(_ sessions: [GameLaunchSession]) {
-        let activeAppIDs = Set(sessions.filter(\.isActive).compactMap(\.appid))
         for game in nativeApps + discoveredSteamGames + wineApps {
-            guard let appid = game.backendID else { continue }
-            if let session = sessions.last(where: { $0.appid == appid }) {
+            if let session = sessions.last(where: { launchSession($0, belongsTo: game) }) {
                 launchSessionByPinID[game.pinID] = session
                 let phase: GameLaunchPhase = switch session.status {
                 case "running": .running
@@ -498,11 +513,25 @@ final class AppViewModel {
                 default: .exited
                 }
                 setLaunchStatus(phase, for: game, message: session.message)
-            } else if !activeAppIDs.contains(appid), [.running, .launching].contains(launchStatusByPinID[game.pinID]?.phase) {
+            } else if [.running, .launching].contains(launchStatusByPinID[game.pinID]?.phase) {
                 setLaunchStatus(.exited, for: game, message: "Game process exited.")
                 launchSessionByPinID.removeValue(forKey: game.pinID)
             }
         }
+    }
+
+    private func launchSession(_ session: GameLaunchSession, belongsTo game: LibraryGame) -> Bool {
+        if let backendID = game.backendID, !backendID.isEmpty, session.appid == backendID {
+            return true
+        }
+        guard game.runner == .wine,
+              let sessionExecutable = session.executable,
+              let launchURL = resolvedLaunchURL(for: game)
+        else {
+            return false
+        }
+        return URL(fileURLWithPath: sessionExecutable).standardizedFileURL.path
+            == launchURL.standardizedFileURL.path
     }
 
     func selectRunner(_ runner: RunnerKind) {
@@ -2174,7 +2203,7 @@ final class AppViewModel {
                 guard let self else { return }
                 self.refreshLaunchSessions()
                 do {
-                    try await Task.sleep(for: .seconds(5))
+                    try await Task.sleep(for: .seconds(3))
                 } catch {
                     return
                 }
@@ -3516,6 +3545,12 @@ final class AppViewModel {
                             self.setLaunchStatus(.launching, for: game, message: "Waiting for the game process...")
                         } else {
                             self.applyLaunchSessions(response.sessions)
+                        }
+                        if self.launchStatusByPinID[game.pinID]?.phase == .launching {
+                            self.reconcileLaunchStateAfterHandoff(
+                                for: game,
+                                generation: actionLaunchGeneration
+                            )
                         }
                     }
                 }
