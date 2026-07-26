@@ -78,6 +78,8 @@ struct SettingsSheet: View {
     @State private var selectedSteamIdentityBottle: String = ""
     @State private var pendingSteamIdentityAction: SteamIdentityAction?
     @State private var showSteamIdentityConfirmation: Bool = false
+    @State private var showUninstallConfirmation: Bool = false
+    @State private var removeManagedDataOnUninstall: Bool = true
     @State private var selectedSection: SettingsSection = .general
 
     var body: some View {
@@ -219,6 +221,14 @@ struct SettingsSheet: View {
         } message: {
             Text(steamIdentityConfirmationMessage)
         }
+        .alert("Uninstall NASE?", isPresented: $showUninstallConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Uninstall", role: .destructive) {
+                model.uninstallNASE(removeManagedData: removeManagedDataOnUninstall)
+            }
+        } message: {
+            Text(uninstallConfirmationMessage)
+        }
     }
 
     private var settingsColumns: [GridItem] {
@@ -327,6 +337,7 @@ struct SettingsSheet: View {
         case .general:
             settingsReleasePanel
             settingsTargetPanel
+            settingsUninstallPanel
         case .accounts:
             settingsSteamIdentityPanel
         case .compatibility:
@@ -376,6 +387,60 @@ struct SettingsSheet: View {
                 }
             }
         }
+    }
+
+    private var settingsUninstallPanel: some View {
+        settingsSection("Uninstall NASE") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Stop NASE-managed Wine processes, clear app settings and caches, and move NASE.app to the Trash.")
+                    .font(.subheadline)
+                    .foregroundStyle(themeMutedForeground)
+
+                Toggle(
+                    "Also delete managed bottles, runtimes, logs, and downloaded Epic/GOG games",
+                    isOn: $removeManagedDataOnUninstall
+                )
+
+                Text("Imported executables, native Mac apps, external Wine prefixes, and Steam libraries outside NASE's managed folder are never deleted.")
+                    .font(.caption)
+                    .foregroundStyle(themeMutedForeground)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(model.uninstallApplicationPath)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(themeMutedForeground)
+                    .textSelection(.enabled)
+
+                if !model.uninstallStatusMessage.isEmpty {
+                    Text(model.uninstallStatusMessage)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(model.isUninstallingNASE ? themeMutedForeground : .red)
+                }
+
+                HStack(spacing: 10) {
+                    Button("Uninstall NASE…", role: .destructive) {
+                        showUninstallConfirmation = true
+                    }
+                    .disabled(!model.canUninstallApplication || model.isUninstallingNASE)
+                    if model.isUninstallingNASE {
+                        ProgressView().controlSize(.small)
+                    }
+                }
+            }
+        }
+    }
+
+    private var uninstallConfirmationMessage: String {
+        if removeManagedDataOnUninstall {
+            return """
+            NASE.app will be moved to the Trash. Everything under ~/Library/Application Support/MySteamWine—including managed bottles, runtimes, logs, protected Steam login data, and downloaded Epic/GOG games—will be permanently deleted.
+
+            External prefixes, imported apps, and Steam libraries outside that folder will remain untouched.
+            """
+        }
+        return """
+        NASE.app will be moved to the Trash and its settings and caches will be removed. The managed data under ~/Library/Application Support/MySteamWine will be kept so it can be reused after reinstalling NASE.
+        """
     }
 
     private var settingsSteamIdentityPanel: some View {

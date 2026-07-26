@@ -104,6 +104,23 @@ restrictive permissions. Short-lived Epic authorization data is passed through
 standard input rather than process arguments or job logs. NASE never modifies
 Steam's host `libraryfolders.vdf` while discovering libraries.
 
+## Uninstalling NASE
+
+Open **Settings → General → Uninstall NASE**. NASE stops its managed Wine
+processes, removes its preferences and caches, moves `NASE.app` to the Trash,
+and quits.
+
+The confirmation offers two data choices:
+
+- Delete `~/Library/Application Support/MySteamWine` for a complete uninstall,
+  including managed bottles, runtimes, logs, protected Steam login data, and
+  Epic/GOG games downloaded into NASE's managed library.
+- Keep that folder if you intend to reinstall NASE without rebuilding its
+  managed environment.
+
+Imported executables, native Mac apps, external Wine prefixes, and Steam
+libraries outside NASE's managed folder are never removed.
+
 ## Run NASE from Source
 
 NASE is currently distributed as a source project for development and testing.

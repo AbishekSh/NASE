@@ -133,6 +133,8 @@ final class AppViewModel {
     var isDownloadingUpdate: Bool = false
     var updateStatusMessage: String = "Updates have not been checked yet."
     var availableUpdate: NASEUpdateManifest?
+    private(set) var isUninstallingNASE: Bool = false
+    private(set) var uninstallStatusMessage: String = ""
     var backendContext: BackendContext = .default()
     var hasAttemptedSteamDetection: Bool = false
     var sortOption: LibrarySortOption = .manual
@@ -1913,6 +1915,51 @@ final class AppViewModel {
             detail: "Force-stop Wine and game processes across every NASE bottle.",
             symbolName: "stop.circle"
         ))
+    }
+
+    var canUninstallApplication: Bool {
+        NASEUninstallPlan.make().applicationURL != nil
+    }
+
+    var uninstallApplicationPath: String {
+        NASEUninstallPlan.make().applicationURL?.path
+            ?? "This development build cannot move itself to the Trash."
+    }
+
+    func uninstallNASE(removeManagedData: Bool) {
+        guard !isUninstallingNASE else { return }
+        let plan = NASEUninstallPlan.make()
+        guard let applicationURL = plan.applicationURL else {
+            uninstallStatusMessage = "Build and open NASE.app before testing self-uninstall."
+            return
+        }
+        isUninstallingNASE = true
+        uninstallStatusMessage = "Stopping NASE-managed Wine processes…"
+        let context = backendContext
+
+        Task {
+            do {
+                _ = try await BackendBridge.execute(.killWine, context: context)
+                launchSessionMonitor?.cancel()
+                launchSessionMonitor = nil
+                launchStateGeneration += 1
+                uninstallStatusMessage = removeManagedData
+                    ? "Removing NASE-managed data and settings…"
+                    : "Removing NASE settings and caches…"
+                try await Task.detached(priority: .utility) {
+                    try NASEUninstallService.eraseOwnedData(
+                        plan: plan,
+                        removeManagedData: removeManagedData
+                    )
+                }.value
+                uninstallStatusMessage = "Moving NASE.app to the Trash…"
+                try await NASEUninstallService.moveApplicationToTrash(applicationURL)
+                NSApplication.shared.terminate(nil)
+            } catch {
+                isUninstallingNASE = false
+                uninstallStatusMessage = error.localizedDescription
+            }
+        }
     }
 
     func setupCompatibilityProfile(_ profile: GraphicsBackendOption) {

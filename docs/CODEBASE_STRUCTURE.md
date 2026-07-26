@@ -63,6 +63,9 @@ The SwiftUI layer owns library UX, app state, settings, sheets, and backend comm
 - `ContentView.swift`: main window layout, sidebar, toolbar, library surface, and high-level sheet presentation.
 - `SharedViews.swift`: small reusable SwiftUI pieces.
 - `LibraryComponents.swift`: reusable library grid/list/detail components.
+- `UninstallService.swift`: constrained cleanup plan for NASE-owned data,
+  legacy preferences/caches, and moving a packaged `NASE.app` to the Trash.
+  It never follows imported executable or external-prefix paths.
 
 ### State And Domain Models
 
