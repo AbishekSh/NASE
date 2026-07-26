@@ -433,13 +433,13 @@ struct SettingsSheet: View {
     private var uninstallConfirmationMessage: String {
         if removeManagedDataOnUninstall {
             return """
-            NASE.app will be moved to the Trash. Everything under ~/Library/Application Support/MySteamWine—including managed bottles, runtimes, logs, protected Steam login data, and downloaded Epic/GOG games—will be permanently deleted.
+            NASE.app will be moved to the Trash. Everything under ~/Library/Application Support/NASE—including managed bottles, runtimes, logs, protected Steam login data, and downloaded Epic/GOG games—will be permanently deleted.
 
             External prefixes, imported apps, and Steam libraries outside that folder will remain untouched.
             """
         }
         return """
-        NASE.app will be moved to the Trash and its settings and caches will be removed. The managed data under ~/Library/Application Support/MySteamWine will be kept so it can be reused after reinstalling NASE.
+        NASE.app will be moved to the Trash and its settings and caches will be removed. The managed data under ~/Library/Application Support/NASE will be kept so it can be reused after reinstalling NASE.
         """
     }
 

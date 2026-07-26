@@ -66,6 +66,9 @@ The SwiftUI layer owns library UX, app state, settings, sheets, and backend comm
 - `UninstallService.swift`: constrained cleanup plan for NASE-owned data,
   legacy preferences/caches, and moving a packaged `NASE.app` to the Trash.
   It never follows imported executable or external-prefix paths.
+- `NASEDataPaths.swift`: canonical `Application Support/NASE` paths and the
+  one-time migration of the legacy `Application Support/MySteamWine` tree and
+  stored Swift settings.
 
 ### State And Domain Models
 
@@ -144,7 +147,7 @@ The CLI is the compatibility contract. Existing commands should keep working eve
 - `library_activity.py`: locked persistent ownership for shared libraries. It permits one Windows Steam owner per library, supports multiple games under that owner, and replaces stale ownership only after the previous Steam process exits.
 - `catalog.py`: managed runtime catalog for Wine, DXVK, and DXMT. It owns pinned download URLs/checksums, archive extraction, install records, and one-button install helpers that can apply graphics payloads to the selected bottle.
 - `bottle.py`: managed and external-prefix path model.
-  - Managed bottles live under `~/Library/Application Support/MySteamWine/bottles/<name>/`.
+  - Managed bottles live under `~/Library/Application Support/NASE/bottles/<name>/`.
   - External prefixes get app-managed logs/download/cache folders under `external-prefixes/<hash>/` while preserving the external prefix path itself.
 
 ### Steam And Launching
@@ -281,7 +284,7 @@ These should be optional lint/test tools. They should not become a runtime depen
 2. Each bottle's primary `steamapps` directory and `libraryfolders.vdf` references are normalized to host paths.
 3. Physical libraries are deduplicated by resolved path and assigned a stable hashed ID.
 4. `appmanifest_*.acf` records are validated against `steamapps/common`; stale and duplicate locations remain diagnostic registry entries.
-5. The registry is atomically replaced at `~/Library/Application Support/MySteamWine/steam-libraries.json`.
+5. The registry is atomically replaced at `~/Library/Application Support/NASE/steam-libraries.json`.
 6. SwiftUI receives one preferred installed location per AppID. This phase never edits Steam configuration.
 
 ### Steam Library Attachment

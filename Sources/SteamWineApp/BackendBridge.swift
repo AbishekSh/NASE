@@ -265,6 +265,7 @@ struct BackendContext {
     let externalPrefix: String?
 
     static func `default`() -> BackendContext {
+        NASEDataPaths.migrateLegacyDataIfNeeded()
         let defaults = UserDefaults.standard
         let sourceURL = URL(fileURLWithPath: #filePath)
         let sourceRepoRoot = sourceURL

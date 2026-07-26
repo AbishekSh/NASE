@@ -1,4 +1,5 @@
-APP_NAME = "MySteamWine"
+APP_NAME = "NASE"
+LEGACY_APP_NAME = "MySteamWine"
 STEAM_SETUP_URL = "https://media.steampowered.com/client/installer/SteamSetup.exe"
 DEFAULT_BOTTLE_NAME = "Default"
 DEFAULT_STEAM_WINDOWS_PATH = r"C:\Program Files (x86)\Steam\Steam.exe"

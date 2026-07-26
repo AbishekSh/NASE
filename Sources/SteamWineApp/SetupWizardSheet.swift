@@ -131,7 +131,7 @@ struct SetupWizardSheet: View {
                     setupBullet("Detect Wine and tell you exactly what to install if it is missing.")
                     setupBullet("Detect Winetricks and do the same.")
                     setupBullet("Pick the DXMT payload we use for the managed Metal path.")
-                    setupBullet("Create a managed bottle under ~/Library/Application Support/MySteamWine.")
+                    setupBullet("Create a managed bottle under ~/Library/Application Support/NASE.")
                     setupBullet("Install Steam into that bottle and prepare it for launch.")
                     Button {
                         showRecommendedBootstrapConfirmation = true
@@ -249,7 +249,7 @@ struct SetupWizardSheet: View {
             wizardCard(title: "Managed Bottle", subtitle: "Choose the bottle the app should create and maintain for Steam.") {
                 VStack(alignment: .leading, spacing: 14) {
                     labeledField("Bottle Name", text: $bottleName, browseAction: nil)
-                    Text("The prefix will live under `~/Library/Application Support/MySteamWine/bottles/<BottleName>`.")
+                    Text("The prefix will live under `~/Library/Application Support/NASE/bottles/<BottleName>`.")
                         .font(.subheadline)
                         .foregroundStyle(themeMutedForeground)
                     if !model.managedBottleNames.isEmpty {

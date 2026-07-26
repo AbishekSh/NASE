@@ -187,8 +187,7 @@ final class AppViewModel {
     private var isRefreshingLaunchSessions = false
 
     var managedBottleNames: [String] {
-        let root = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/MySteamWine/bottles", isDirectory: true)
+        let root = appSupportRootURL.appendingPathComponent("bottles", isDirectory: true)
         guard let contents = try? FileManager.default.contentsOfDirectory(
             at: root,
             includingPropertiesForKeys: [.isDirectoryKey],
@@ -208,8 +207,7 @@ final class AppViewModel {
     }
 
     var allManagedSteamBottleNames: [String] {
-        let root = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/MySteamWine/bottles", isDirectory: true)
+        let root = appSupportRootURL.appendingPathComponent("bottles", isDirectory: true)
         let names = (try? FileManager.default.contentsOfDirectory(
             at: root,
             includingPropertiesForKeys: [.isDirectoryKey],
@@ -354,8 +352,7 @@ final class AppViewModel {
     }
 
     private var appSupportRootURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/MySteamWine", isDirectory: true)
+        NASEDataPaths.migrateLegacyDataIfNeeded()
     }
 
     var steamLibraryCacheURL: URL? {
@@ -363,8 +360,8 @@ final class AppViewModel {
         if let externalPrefix = backendContext.externalPrefix, !externalPrefix.isEmpty {
             prefixURL = URL(fileURLWithPath: externalPrefix, isDirectory: true)
         } else {
-            prefixURL = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Application Support/MySteamWine/bottles", isDirectory: true)
+            prefixURL = appSupportRootURL
+                .appendingPathComponent("bottles", isDirectory: true)
                 .appendingPathComponent(backendContext.bottleName, isDirectory: true)
                 .appendingPathComponent("prefix", isDirectory: true)
         }
@@ -1077,8 +1074,8 @@ final class AppViewModel {
     }
 
     private func contextAdoptingWineStable(_ winePath: String, baseContext: BackendContext) -> BackendContext {
-        let managedDXMT = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/MySteamWine/runtimes/dxmt/dxmt-0.71", isDirectory: true)
+        let managedDXMT = appSupportRootURL
+            .appendingPathComponent("runtimes/dxmt/dxmt-0.71", isDirectory: true)
         let detectedDXMT = FileManager.default.fileExists(atPath: managedDXMT.path) ? managedDXMT.path : nil
         return BackendContext(
             repoRoot: baseContext.repoRoot,
@@ -1235,7 +1232,7 @@ final class AppViewModel {
     func detectedWinetricksPath() -> String? {
         let fileManager = FileManager.default
         let commonPaths = [
-            "\(NSHomeDirectory())/Library/Application Support/MySteamWine/runtimes/tool/winetricks-20260125/bin/winetricks",
+            appSupportRootURL.appendingPathComponent("runtimes/tool/winetricks-20260125/bin/winetricks").path,
             "/opt/homebrew/bin/winetricks",
             "/usr/local/bin/winetricks",
             "/opt/local/bin/winetricks",
@@ -2122,8 +2119,8 @@ final class AppViewModel {
 
     func compatibilityProfileIsReady(_ profile: GraphicsBackendOption) -> Bool {
         let context = backendContext.compatibilityContext(for: profile)
-        let manifestURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/MySteamWine/bottles", isDirectory: true)
+        let manifestURL = appSupportRootURL
+            .appendingPathComponent("bottles", isDirectory: true)
             .appendingPathComponent(context.bottleName, isDirectory: true)
             .appendingPathComponent("compatibility-profile.json")
         guard
@@ -3732,8 +3729,7 @@ final class AppViewModel {
     }
 
     private func logsDirectoryURL(for runner: RunnerKind, context: BackendContext) -> URL {
-        let appSupport = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/MySteamWine", isDirectory: true)
+        let appSupport = appSupportRootURL
 
         if let externalPrefix = context.externalPrefix, !externalPrefix.isEmpty {
             let resolved = URL(fileURLWithPath: externalPrefix).standardizedFileURL.path
@@ -3897,8 +3893,7 @@ final class AppViewModel {
     }
 
     private func managedWineRuntimesRoot() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/MySteamWine", isDirectory: true)
+        appSupportRootURL
             .appendingPathComponent("runtimes", isDirectory: true)
     }
 

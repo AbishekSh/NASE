@@ -92,12 +92,17 @@ logs available inside the app.
 NASE stores managed data under:
 
 ```text
-~/Library/Application Support/MySteamWine
+~/Library/Application Support/NASE
 ```
 
 This includes bottles, managed runtimes, logs, downloads, job records, provider
 state, and the canonical Steam library registry. Imported external prefixes
 remain in their original locations.
+
+Upgrading from an older build automatically moves
+`~/Library/Application Support/MySteamWine` to this location and updates
+NASE-owned stored paths. The migration does not copy or modify external
+prefixes.
 
 Store credentials and remembered Steam metadata stay in NASE-owned storage with
 restrictive permissions. Short-lived Epic authorization data is passed through
@@ -112,7 +117,7 @@ and quits.
 
 The confirmation offers two data choices:
 
-- Delete `~/Library/Application Support/MySteamWine` for a complete uninstall,
+- Delete `~/Library/Application Support/NASE` for a complete uninstall,
   including managed bottles, runtimes, logs, protected Steam login data, and
   Epic/GOG games downloaded into NASE's managed library.
 - Keep that folder if you intend to reinstall NASE without rebuilding its

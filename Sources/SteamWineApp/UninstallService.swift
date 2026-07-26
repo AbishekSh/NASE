@@ -3,6 +3,7 @@ import Foundation
 
 struct NASEUninstallPlan: Equatable {
     let managedDataURL: URL
+    let legacyManagedDataURL: URL
     let auxiliaryURLs: [URL]
     let preferenceDomains: [String]
     let applicationURL: URL?
@@ -33,10 +34,8 @@ struct NASEUninstallPlan: Equatable {
         }
 
         return NASEUninstallPlan(
-            managedDataURL: library.appendingPathComponent(
-                "Application Support/MySteamWine",
-                isDirectory: true
-            ),
+            managedDataURL: NASEDataPaths.rootURL(homeURL: homeURL),
+            legacyManagedDataURL: NASEDataPaths.legacyRootURL(homeURL: homeURL),
             auxiliaryURLs: auxiliaryURLs,
             preferenceDomains: identifiers,
             applicationURL: recyclableApplicationURL(applicationURL)
@@ -83,7 +82,10 @@ enum NASEUninstallService {
         fileManager: FileManager = .default
     ) throws {
         var failedPaths: [String] = []
-        let targets = (removeManagedData ? [plan.managedDataURL] : []) + plan.auxiliaryURLs
+        let managedTargets = removeManagedData
+            ? [plan.managedDataURL, plan.legacyManagedDataURL]
+            : []
+        let targets = managedTargets + plan.auxiliaryURLs
         for target in targets {
             guard fileManager.fileExists(atPath: target.path) else { continue }
             do {
