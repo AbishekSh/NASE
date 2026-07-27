@@ -11,6 +11,12 @@ import mysteamwine.catalog as catalog
 from mysteamwine.catalog import CATALOG
 
 
+class DownloadResponse(io.BytesIO):
+    def __init__(self, payload: bytes) -> None:
+        super().__init__(payload)
+        self.headers = {"Content-Length": str(len(payload))}
+
+
 class RuntimeCatalogTests(unittest.TestCase):
     def test_gog_clients_are_checksum_pinned_for_both_mac_architectures(self) -> None:
         entries = [item for item in CATALOG if item.id.startswith("gogdl-1.2.2-macos-")]
@@ -72,6 +78,35 @@ class RuntimeCatalogTests(unittest.TestCase):
 
             self.assertEqual(result.read_bytes(), payload)
             self.assertFalse((root / "runtime.bin.partial").exists())
+
+    def test_download_reports_byte_and_percentage_progress(self) -> None:
+        payload = b"x" * (3 * 1024 * 1024)
+        entry = catalog.RuntimeCatalogEntry(
+            id="progress-runtime",
+            name="Progress Runtime",
+            version="1",
+            kind="test",
+            source="test",
+            download_url="https://example.invalid/progress.bin",
+            sha256=hashlib.sha256(payload).hexdigest(),
+            archive_type="binary",
+            install_layout="test",
+            license="test",
+            notes="test",
+        )
+        updates: list[tuple[str, str, str]] = []
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with (
+                patch.object(catalog, "downloads_root", return_value=root),
+                patch.object(catalog.urllib.request, "urlopen", return_value=DownloadResponse(payload)),
+            ):
+                result = catalog._download(entry, lambda name, status, message: updates.append((name, status, message)))
+
+            self.assertEqual(result.read_bytes(), payload)
+            progress_messages = [message for name, status, message in updates if name == "download" and status == "started"]
+            self.assertTrue(any("MiB" in message and "%" in message for message in progress_messages))
+            self.assertTrue(any("(100%)" in message for message in progress_messages))
 
 
 if __name__ == "__main__":

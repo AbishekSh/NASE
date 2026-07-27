@@ -989,7 +989,17 @@ final class AppViewModel {
 
                 if missing.contains("DXMT 0.71") {
                     await report("Downloading and verifying DXMT 0.71...", completedSteps: completed)
-                    let installed = try await BackendBridge.execute(.installRuntime(id: "dxmt-0.71"), context: configuredContext)
+                    let installed = try await BackendBridge.executeStreaming(
+                        .installRuntime(id: "dxmt-0.71"),
+                        context: configuredContext
+                    ) { update in
+                        if let message = update.job?.message {
+                            await MainActor.run {
+                                self.dependencyBootstrapPhase = .installing
+                                self.dependencyBootstrapMessage = message
+                            }
+                        }
+                    }
                     if let source = installed.runtimes.first(where: { $0.id == "dxmt-0.71" })?.path {
                         configuredContext = configuredContext.overridingRuntimeSources(dxmtSource: source)
                     }

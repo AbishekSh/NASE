@@ -46,6 +46,8 @@ class InstalledRuntime:
 
 
 StepCallback = Callable[[str, str, str], None]
+DOWNLOAD_CHUNK_BYTES = 1024 * 1024
+DOWNLOAD_DEADLINE_SECONDS = 15 * 60
 
 
 CATALOG: tuple[RuntimeCatalogEntry, ...] = (
@@ -326,7 +328,43 @@ def _download(entry: RuntimeCatalogEntry, callback: StepCallback | None = None) 
     partial.unlink(missing_ok=True)
     try:
         with urllib.request.urlopen(entry.download_url, timeout=120) as response, partial.open("wb") as handle:
-            shutil.copyfileobj(response, handle)
+            content_length = response.headers.get("Content-Length") if hasattr(response, "headers") else None
+            try:
+                total_bytes = int(content_length) if content_length else None
+            except (TypeError, ValueError):
+                total_bytes = None
+            downloaded_bytes = 0
+            last_reported_percent = -1
+            last_reported_bytes = 0
+            deadline = time.monotonic() + DOWNLOAD_DEADLINE_SECONDS
+            while True:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"Download timed out after {DOWNLOAD_DEADLINE_SECONDS // 60} minutes: {entry.name} {entry.version}"
+                    )
+                chunk = response.read(DOWNLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                downloaded_bytes += len(chunk)
+                if callback:
+                    if total_bytes and total_bytes > 0:
+                        percent = min(100, int(downloaded_bytes * 100 / total_bytes))
+                        if percent >= last_reported_percent + 5 or downloaded_bytes == total_bytes:
+                            callback(
+                                "download",
+                                "started",
+                                f"Downloading {entry.name} {entry.version}: "
+                                f"{downloaded_bytes / 1024**2:.1f} of {total_bytes / 1024**2:.1f} MiB ({percent}%).",
+                            )
+                            last_reported_percent = percent
+                    elif downloaded_bytes - last_reported_bytes >= 8 * 1024**2:
+                        callback(
+                            "download",
+                            "started",
+                            f"Downloading {entry.name} {entry.version}: {downloaded_bytes / 1024**2:.1f} MiB received.",
+                        )
+                        last_reported_bytes = downloaded_bytes
         _verify(partial, entry.sha256, callback)
         partial.replace(destination)
     except BaseException:
