@@ -138,6 +138,38 @@ class CompatibilityProfileTests(unittest.TestCase):
         self.assertNotIn("last_failure", ready)
         self.assertNotIn("active_job_id", ready)
 
+    def test_profile_setup_marks_the_bound_manifest_active(self) -> None:
+        active_manifest: dict[str, object] = {
+            "schema_version": 1,
+            "profile": {"id": "dxmt-wine-stable-11-v1"},
+        }
+        args = SimpleNamespace(
+            profile="dxmt-wine-stable-11-v1",
+            repair=False,
+            prefix=None,
+            bottle=self.bottle.name,
+            dxmt_source=str(self.source),
+            d3dmetal_source=None,
+            dxvk_source=None,
+            moltenvk_source=None,
+            json=False,
+            jsonl=False,
+        )
+
+        with (
+            patch.object(cli, "_require_wine64", return_value=Path("/runtime/wine")),
+            patch.object(cli, "_resolve_bottle", return_value=self.bottle),
+            patch.object(cli, "_is_external_prefix", return_value=False),
+            patch.object(cli, "bind_profile", return_value=active_manifest),
+            patch.object(cli, "ensure_bottle_dirs", side_effect=RuntimeError("stop after manifest")),
+            patch.object(cli, "kill_wine_processes"),
+            self.assertRaisesRegex(SystemExit, "stop after manifest"),
+        ):
+            cli.cmd_setup_compatibility_profile(args)
+
+        self.assertEqual(active_manifest["setup_status"], "setting-up")
+        self.assertIn("setup_started_at", active_manifest)
+
     def test_profile_delete_refuses_bottle_with_local_steam_games(self) -> None:
         steamapps = (
             self.bottle.prefix

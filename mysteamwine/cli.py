@@ -643,7 +643,7 @@ def cmd_setup_compatibility_profile(args: argparse.Namespace) -> None:
                     f"only {free_bytes // (1024**2)} MiB is available."
                 )
             steps.append({"name": "disk-space", "status": "ok"})
-        bind_profile(
+        active_manifest = bind_profile(
             bottle=bottle,
             profile_id=profile_id,
             graphics_backend=graphics_backend,
