@@ -201,7 +201,19 @@ def bind_profile(
             existing = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise RuntimeError(f"Compatibility manifest is damaged: {manifest_path}") from exc
-        comparable_keys = ("profile", "wine_path", "wine_version", "graphics_source_fingerprint", "moltenvk_source_fingerprint")
+        comparable_keys = ["profile", "wine_path", "wine_version"]
+        # Managed runtimes are checksum-pinned catalog artifacts. Reinstalling the
+        # same artifact can change directory mtimes without changing the stack.
+        # Prefer its stable catalog identity and retain fingerprints for imports.
+        if not (
+            existing.get("graphics_runtime_id")
+            and existing.get("graphics_runtime_id") == fingerprint.get("graphics_runtime_id")
+        ):
+            comparable_keys.append("graphics_source_fingerprint")
+        existing_moltenvk_sha = (existing.get("dxvk_macos_stack") or {}).get("moltenvk_sha256")
+        current_moltenvk_sha = (fingerprint.get("dxvk_macos_stack") or {}).get("moltenvk_sha256")
+        if not (existing_moltenvk_sha and existing_moltenvk_sha == current_moltenvk_sha):
+            comparable_keys.append("moltenvk_source_fingerprint")
         if any(existing.get(key) != fingerprint.get(key) for key in comparable_keys):
             raise RuntimeError(
                 f"Bottle '{bottle.name}' is already bound to a different compatibility stack. "

@@ -2546,9 +2546,12 @@ def cmd_debug_game(args: argparse.Namespace) -> None:
     bottle = _resolve_bottle(args)
     executable = _resolve_debug_executable(args)
     graphics_backend = _resolved_graphics_backend(args, for_steam=False)
-    profile_id = _bind_launch_profile(
-        args, action="debug-game", bottle=bottle, wine_path=wine64, graphics_backend=graphics_backend
-    )
+    if args.standalone:
+        profile_id = f"standalone-{graphics_backend}"
+    else:
+        profile_id = _bind_launch_profile(
+            args, action="debug-game", bottle=bottle, wine_path=wine64, graphics_backend=graphics_backend
+        )
     job_id = _stream_start(action="debug-game", message=f"Launching {executable.name} with Wine debug logging...") if _stream_enabled(args) else None
     extra_args = list(args.game_args or [])
     if extra_args and extra_args[0] == "--":
@@ -3160,6 +3163,11 @@ def build_parser() -> argparse.ArgumentParser:
     debug_cmd = sub.add_parser("debug-game", help="Launch a game executable directly with Wine debug logging")
     debug_cmd.add_argument("--appid", help="Steam AppID to resolve to an installed game executable")
     debug_cmd.add_argument("--exe", help="Explicit path to a Windows game executable inside the bottle")
+    debug_cmd.add_argument(
+        "--standalone",
+        action="store_true",
+        help="Launch a standalone Windows executable without requiring a Steam compatibility-profile setup.",
+    )
     debug_cmd.add_argument("--cwd", help="Optional working directory override")
     debug_cmd.add_argument("--env", action="append", default=[], help="Extra environment override in KEY=VALUE form")
     debug_cmd.add_argument(

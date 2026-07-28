@@ -23,7 +23,7 @@ class CompatibilityProfileTests(unittest.TestCase):
         profile = profiles.profile_for("dxvk-macos-pinned-v1", "dxvk")
         self.assertTrue(profile.ready)
 
-    def test_profile_manifest_rejects_runtime_drift(self) -> None:
+    def test_profile_manifest_rejects_wine_runtime_drift(self) -> None:
         with (
             patch.object(profiles, "_wine_version", return_value="wine-11.0"),
             patch.object(profiles, "_source_fingerprint", return_value="source-a"),
@@ -40,9 +40,24 @@ class CompatibilityProfileTests(unittest.TestCase):
 
         with (
             patch.object(profiles, "_wine_version", return_value="wine-11.0"),
-            patch.object(profiles, "_source_fingerprint", return_value="source-b"),
+            patch.object(profiles, "_source_fingerprint", return_value="source-a"),
             patch.object(profiles, "_runtime_id_for_source", return_value="dxmt-0.71"),
             self.assertRaisesRegex(RuntimeError, "different compatibility stack"),
+        ):
+            profiles.bind_profile(
+                bottle=self.bottle,
+                profile_id="dxmt-wine-stable-11-v1",
+                graphics_backend="dxmt",
+                wine_path=Path("/runtime/other-wine"),
+                graphics_source=self.source,
+                require_ready=False,
+            )
+
+    def test_managed_runtime_reinstall_does_not_invalidate_profile(self) -> None:
+        with (
+            patch.object(profiles, "_wine_version", return_value="wine-11.0"),
+            patch.object(profiles, "_source_fingerprint", return_value="source-before-reinstall"),
+            patch.object(profiles, "_runtime_id_for_source", return_value="dxmt-0.71"),
         ):
             profiles.bind_profile(
                 bottle=self.bottle,
@@ -52,6 +67,63 @@ class CompatibilityProfileTests(unittest.TestCase):
                 graphics_source=self.source,
                 require_ready=False,
             )
+            profiles.mark_profile_ready(self.bottle)
+
+        with (
+            patch.object(profiles, "_wine_version", return_value="wine-11.0"),
+            patch.object(profiles, "_source_fingerprint", return_value="source-after-reinstall"),
+            patch.object(profiles, "_runtime_id_for_source", return_value="dxmt-0.71"),
+        ):
+            ready = profiles.bind_profile(
+                bottle=self.bottle,
+                profile_id="dxmt-wine-stable-11-v1",
+                graphics_backend="dxmt",
+                wine_path=Path("/runtime/wine"),
+                graphics_source=self.source,
+            )
+
+        self.assertEqual(ready["setup_status"], "ready")
+
+    def test_dxvk_reinstall_does_not_invalidate_pinned_stack(self) -> None:
+        dxvk_source = self.bottle.root / "dxvk"
+        moltenvk_source = self.bottle.root / "libMoltenVK.dylib"
+        dxvk_source.mkdir()
+        moltenvk_source.write_bytes(b"pinned-moltenvk")
+        inspection = {"moltenvk_sha256": "pinned-sha"}
+
+        with (
+            patch.object(profiles, "_wine_version", return_value="wine-10.0 (Sikarugir)"),
+            patch.object(profiles, "_runtime_id_for_source", return_value="dxvk-macos-1.10.3-20230507-repack"),
+            patch.object(profiles, "inspect_dxvk_macos_stack", return_value=inspection),
+            patch.object(profiles, "_source_fingerprint", side_effect=["dxvk-before", "moltenvk-before"]),
+        ):
+            profiles.bind_profile(
+                bottle=self.bottle,
+                profile_id="dxvk-macos-pinned-v1",
+                graphics_backend="dxvk",
+                wine_path=Path("/runtime/sikarugir-wine"),
+                graphics_source=dxvk_source,
+                moltenvk_source=moltenvk_source,
+                require_ready=False,
+            )
+            profiles.mark_profile_ready(self.bottle)
+
+        with (
+            patch.object(profiles, "_wine_version", return_value="wine-10.0 (Sikarugir)"),
+            patch.object(profiles, "_runtime_id_for_source", return_value="dxvk-macos-1.10.3-20230507-repack"),
+            patch.object(profiles, "inspect_dxvk_macos_stack", return_value=inspection),
+            patch.object(profiles, "_source_fingerprint", side_effect=["dxvk-after", "moltenvk-after"]),
+        ):
+            ready = profiles.bind_profile(
+                bottle=self.bottle,
+                profile_id="dxvk-macos-pinned-v1",
+                graphics_backend="dxvk",
+                wine_path=Path("/runtime/sikarugir-wine"),
+                graphics_source=dxvk_source,
+                moltenvk_source=moltenvk_source,
+            )
+
+        self.assertEqual(ready["setup_status"], "ready")
 
     def test_dxmt_profile_requires_wine_11(self) -> None:
         with (
@@ -169,6 +241,44 @@ class CompatibilityProfileTests(unittest.TestCase):
 
         self.assertEqual(active_manifest["setup_status"], "setting-up")
         self.assertIn("setup_started_at", active_manifest)
+
+    def test_standalone_executable_launch_skips_steam_profile_binding(self) -> None:
+        executable = self.bottle.root / "notepad++.exe"
+        executable.write_bytes(b"MZ")
+        args = SimpleNamespace(
+            exe=str(executable),
+            appid=None,
+            standalone=True,
+            graphics_backend="none",
+            compatibility_profile="plain-wine-v1",
+            dxmt_source=None,
+            dxvk_source=None,
+            dxvk_flavor="upstream",
+            d3dmetal_source=None,
+            allow_unrecommended_dxmt=False,
+            game_args=[],
+            env=[],
+            cwd=None,
+            legacy_directx_source=None,
+            ensure_steam=False,
+            wine_debug="-all",
+            no_wait=True,
+            json=False,
+            jsonl=False,
+        )
+        session = {"session_id": "standalone-session", "status": "running"}
+
+        with (
+            patch.object(cli, "_require_wine64", return_value=Path("/runtime/wine")),
+            patch.object(cli, "_resolve_bottle", return_value=self.bottle),
+            patch.object(cli, "_bind_launch_profile", side_effect=AssertionError("Steam profile binding must be skipped")),
+            patch.object(cli, "validate_executable_compatibility", return_value="x86_64"),
+            patch.object(cli, "steam_is_running", return_value=False),
+            patch.object(cli, "create_session", return_value=session),
+            patch.object(cli, "run_game_executable", return_value=(0, "")),
+            patch.object(cli, "reconcile_sessions", return_value=[session]),
+        ):
+            cli.cmd_debug_game(args)
 
     def test_profile_delete_refuses_bottle_with_local_steam_games(self) -> None:
         steamapps = (

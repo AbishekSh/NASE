@@ -42,6 +42,7 @@ struct StoredGameSettings: Codable {
     var assignedExternalPrefix: String = ""
     var legacyDirectXEnabled: Bool?
     var legacyDirectXSource: String?
+    var graphicsBackendWasExplicitlySelected: Bool?
 }
 
 fileprivate struct SteamLocalMetadata {
@@ -1430,7 +1431,8 @@ final class AppViewModel {
             .debugExecutable(
                 path: url.path,
                 graphicsBackend: .none,
-                wineDebug: "-all"
+                wineDebug: "-all",
+                standalone: true
             ),
             successMessage: "Opened installer \(url.lastPathComponent).",
             context: backendContext,
@@ -1758,7 +1760,8 @@ final class AppViewModel {
                     gameArgs: args,
                     graphicsBackend: settings.graphicsBackend,
                     workingDirectory: cwd,
-                    environment: env
+                    environment: env,
+                    standalone: true
                 ),
                 successMessage: "Debug launch started for \(game.title).",
                 context: context,
@@ -2779,7 +2782,7 @@ final class AppViewModel {
         }
         wineApps = mergeLibraryGames(existing: wineApps, incoming: imported)
         for game in imported {
-            var settings = gameSettingsByPinID[game.pinID] ?? StoredGameSettings()
+            var settings = gameSettingsByPinID[game.pinID] ?? defaultSettings(for: game)
             if settings.workingDirectoryPath.isEmpty {
                 settings.workingDirectoryPath = game.launchURL?.deletingLastPathComponent().path ?? game.installURL?.path ?? ""
             }
@@ -2964,7 +2967,19 @@ final class AppViewModel {
     }
 
     func settings(for game: LibraryGame) -> StoredGameSettings {
-        gameSettingsByPinID[game.pinID] ?? StoredGameSettings()
+        var settings = gameSettingsByPinID[game.pinID] ?? defaultSettings(for: game)
+        if game.runner == .wine, settings.graphicsBackendWasExplicitlySelected != true {
+            settings.graphicsBackend = .none
+        }
+        return settings
+    }
+
+    private func defaultSettings(for game: LibraryGame) -> StoredGameSettings {
+        var settings = StoredGameSettings()
+        if game.runner == .wine {
+            settings.graphicsBackend = .none
+        }
+        return settings
     }
 
     func saveSettings(
@@ -2992,7 +3007,8 @@ final class AppViewModel {
             assignedBottleName: assignedBottleName,
             assignedExternalPrefix: assignedExternalPrefix,
             legacyDirectXEnabled: legacyDirectXEnabled,
-            legacyDirectXSource: legacyDirectXSource
+            legacyDirectXSource: legacyDirectXSource,
+            graphicsBackendWasExplicitlySelected: true
         )
         persistGameSettings()
         selectedGame = filteredGames.first(where: { $0.pinID == game.pinID }) ?? selectedGame
@@ -3759,7 +3775,8 @@ final class AppViewModel {
                 graphicsBackend: backend,
                 workingDirectory: cwd,
                 environment: env,
-                wineDebug: "-all"
+                wineDebug: "-all",
+                standalone: true
             ),
             successMessage: game.status.localizedCaseInsensitiveContains("installer") ? "Opened installer \(game.title)." : "Launched \(game.title).",
             context: context,

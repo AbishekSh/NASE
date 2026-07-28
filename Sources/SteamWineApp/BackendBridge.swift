@@ -408,13 +408,35 @@ struct BackendContext {
         )
     }
 
-    func compatibilityContext(for graphicsBackend: GraphicsBackendOption) -> BackendContext {
+    func compatibilityContext(
+        for graphicsBackend: GraphicsBackendOption,
+        appSupportRoot: URL? = nil
+    ) -> BackendContext {
         let suffix = "-\(graphicsBackend.bottleSuffix)"
         let profileBottle = bottleName.hasSuffix(suffix) ? bottleName : "\(bottleName)\(suffix)"
+        let defaultWinePath = (graphicsBackend == .d3dmetal || graphicsBackend == .dxvk) ? gptkWinePath : winePath
+        let supportRoot = appSupportRoot
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Application Support/NASE", isDirectory: true)
+        let manifestURL = supportRoot
+            .appendingPathComponent("bottles", isDirectory: true)
+            .appendingPathComponent(profileBottle, isDirectory: true)
+            .appendingPathComponent("compatibility-profile.json")
+        let boundWinePath: String? = {
+            guard
+                let data = try? Data(contentsOf: manifestURL),
+                let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let profile = manifest["profile"] as? [String: Any],
+                profile["id"] as? String == graphicsBackend.compatibilityProfileID,
+                let path = manifest["wine_path"] as? String,
+                FileManager.default.isExecutableFile(atPath: path)
+            else { return nil }
+            return path
+        }()
         return BackendContext(
             repoRoot: repoRoot,
             pythonCommand: pythonCommand,
-            winePath: (graphicsBackend == .d3dmetal || graphicsBackend == .dxvk) ? gptkWinePath : winePath,
+            winePath: boundWinePath ?? defaultWinePath,
             dxmtSource: dxmtSource,
             dxvkSource: dxvkSource,
             d3dMetalSource: d3dMetalSource,
@@ -484,7 +506,8 @@ enum BackendAction {
         workingDirectory: String? = nil,
         environment: [String] = [],
         wineDebug: String = "+timestamp,+seh,+loaddll",
-        legacyDirectXSource: String? = nil
+        legacyDirectXSource: String? = nil,
+        standalone: Bool = false
     )
 }
 
@@ -787,9 +810,12 @@ enum BackendBridge {
             }
             args += passthroughArguments(gameArgs)
             return args
-        case .debugExecutable(let path, let gameArgs, let graphicsBackend, let workingDirectory, let environment, let wineDebug, let legacyDirectXSource):
+        case .debugExecutable(let path, let gameArgs, let graphicsBackend, let workingDirectory, let environment, let wineDebug, let legacyDirectXSource, let standalone):
             var args = base
             args += ["--graphics-backend", graphicsBackend.cliValue, "--compatibility-profile", graphicsBackend.compatibilityProfileID, "debug-game", "--exe", path]
+            if standalone {
+                args += ["--standalone"]
+            }
             if graphicsBackend == .dxmt {
                 args += ["--dxmt-source", context.dxmtSource]
             } else if graphicsBackend == .dxvk {
