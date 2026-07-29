@@ -16,12 +16,30 @@ from .runtime import run_logged
 PINNED_WINE_VERSION = "wine-10.0 (Sikarugir)"
 PINNED_DXVK_RUNTIME_ID = "dxvk-macos-1.10.3-20230507-repack"
 PINNED_DXVK_VERSION = "1.10.3-20230507-repack"
-PINNED_MOLTENVK_VERSION = "1.4.1-cx"
-PINNED_MOLTENVK_SHA256 = "e9de8aa6053e1347c82aff01c6d7964556f306b2f7c63db88eb54a05e4f8b980"
+PINNED_MOLTENVK_PAYLOADS = {
+    # Bundled in the checksum-pinned Sikarugir Wine 10 r6 engine.
+    "3e365bfdfb4e9292d9cd1d896330c6d639721015d0443c6391ef86c104c17568": "Sikarugir Wine 10 r6",
+    # Older compatible CodeWeavers payload imported from a Sikarugir wrapper.
+    "e9de8aa6053e1347c82aff01c6d7964556f306b2f7c63db88eb54a05e4f8b980": "CodeWeavers 1.4.1",
+}
 PROBE_SHA256 = "4e5e75469dccfe63eabced92b00d05cdb265ab822154988fdabc1b1b4462081a"
 
 
-def discover_moltenvk_source() -> Path | None:
+def discover_moltenvk_source(wine_path: Path | None = None) -> Path | None:
+    candidates: list[Path] = []
+    if wine_path is not None:
+        wine_root = wine_path.expanduser().resolve().parent.parent
+        candidates.extend((
+            wine_root / "lib" / "libMoltenVK.dylib",
+            wine_root / "lib64" / "libMoltenVK.dylib",
+        ))
+    for path in candidates:
+        try:
+            if path.is_file() and _sha256(path) in PINNED_MOLTENVK_PAYLOADS:
+                return path
+        except OSError:
+            continue
+
     roots = (Path.home() / "Applications" / "Sikarugir", Path("/Applications"))
     for root in roots:
         if not root.is_dir():
@@ -30,7 +48,7 @@ def discover_moltenvk_source() -> Path | None:
             if "moltenvkcx" not in str(path).lower():
                 continue
             try:
-                if _sha256(path) == PINNED_MOLTENVK_SHA256:
+                if _sha256(path) in PINNED_MOLTENVK_PAYLOADS:
                     return path
             except OSError:
                 continue
@@ -127,10 +145,10 @@ def inspect_dxvk_macos_stack(wine_path: Path, dxvk_source: Path, moltenvk_source
 
     moltenvk = resolve_moltenvk_library(moltenvk_source)
     moltenvk_sha = _sha256(moltenvk)
-    if moltenvk_sha != PINNED_MOLTENVK_SHA256:
+    if moltenvk_sha not in PINNED_MOLTENVK_PAYLOADS:
         raise RuntimeError(
-            "MoltenVK does not match the pinned CodeWeavers 1.4.1 build "
-            f"(expected {PINNED_MOLTENVK_SHA256}, got {moltenvk_sha})."
+            "MoltenVK does not match a supported checksum-pinned Sikarugir build "
+            f"(got {moltenvk_sha})."
         )
     file_result = subprocess.run(["/usr/bin/file", str(moltenvk)], capture_output=True, text=True, check=False)
     if file_result.returncode != 0 or "Mach-O" not in file_result.stdout:
@@ -147,7 +165,7 @@ def inspect_dxvk_macos_stack(wine_path: Path, dxvk_source: Path, moltenvk_source
         "dxvk_version": PINNED_DXVK_VERSION,
         "dxvk_source": str(root),
         "dll_architecture": architecture,
-        "moltenvk_version": PINNED_MOLTENVK_VERSION,
+        "moltenvk_version": PINNED_MOLTENVK_PAYLOADS[moltenvk_sha],
         "moltenvk_source": str(moltenvk),
         "moltenvk_sha256": moltenvk_sha,
         "moltenvk_dependencies": deps_result.stdout.splitlines()[1:],
@@ -168,7 +186,7 @@ def install_dxvk_macos_native_runtime(bottle: Bottle, inspection: dict) -> Path:
 def dxvk_macos_launch_environment(bottle: Bottle) -> dict[str, str]:
     native = bottle.root / "runtime" / "dxvk-macos" / "native"
     moltenvk = native / "libMoltenVK.dylib"
-    if not moltenvk.is_file() or _sha256(moltenvk) != PINNED_MOLTENVK_SHA256:
+    if not moltenvk.is_file() or _sha256(moltenvk) not in PINNED_MOLTENVK_PAYLOADS:
         raise RuntimeError("DXVK-macOS native runtime is missing or damaged. Repair the profile first.")
     fallback = str(native)
     existing = os.environ.get("DYLD_FALLBACK_LIBRARY_PATH")

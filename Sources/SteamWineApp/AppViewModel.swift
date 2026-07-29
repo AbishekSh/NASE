@@ -1965,9 +1965,12 @@ final class AppViewModel {
 
     func setupCompatibilityProfile(_ profile: GraphicsBackendOption) {
         let context = effectiveBackendContext(backendContext.compatibilityContext(for: profile))
+        let isRepair = compatibilityProfileExists(profile, context: context)
         executeDetached(
-            .setupCompatibilityProfile(profile),
-            successMessage: "\(profile.rawValue) profile is ready.",
+            isRepair ? .repairCompatibilityProfile(profile) : .setupCompatibilityProfile(profile),
+            successMessage: isRepair
+                ? "\(profile.rawValue) profile was repaired and verified."
+                : "\(profile.rawValue) profile is ready.",
             context: context
         )
     }
@@ -2126,14 +2129,35 @@ final class AppViewModel {
         return compatibilityProfileIsReady(profile, context: context)
     }
 
+    func compatibilityProfileExists(_ profile: GraphicsBackendOption) -> Bool {
+        compatibilityProfileExists(profile, context: backendContext.compatibilityContext(for: profile))
+    }
+
+    private func compatibilityProfileExists(
+        _ profile: GraphicsBackendOption,
+        context: BackendContext
+    ) -> Bool {
+        let manifestURL = compatibilityProfileManifestURL(context: context)
+        guard
+            let data = try? Data(contentsOf: manifestURL),
+            let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let storedProfile = payload["profile"] as? [String: Any]
+        else { return false }
+        return storedProfile["id"] as? String == profile.compatibilityProfileID
+    }
+
+    private func compatibilityProfileManifestURL(context: BackendContext) -> URL {
+        appSupportRootURL
+            .appendingPathComponent("bottles", isDirectory: true)
+            .appendingPathComponent(context.bottleName, isDirectory: true)
+            .appendingPathComponent("compatibility-profile.json")
+    }
+
     private func compatibilityProfileIsReady(
         _ profile: GraphicsBackendOption,
         context: BackendContext
     ) -> Bool {
-        let manifestURL = appSupportRootURL
-            .appendingPathComponent("bottles", isDirectory: true)
-            .appendingPathComponent(context.bottleName, isDirectory: true)
-            .appendingPathComponent("compatibility-profile.json")
+        let manifestURL = compatibilityProfileManifestURL(context: context)
         guard
             let data = try? Data(contentsOf: manifestURL),
             let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -3507,11 +3531,22 @@ final class AppViewModel {
         }
 
         provisioningProfiles.insert(profile)
-        setLaunchStatus(.launching, for: game, message: "Preparing the \(profile.rawValue) profile and Steam…")
-        rightPanelMessage = "Creating \(profile.rawValue) on demand. Shared game files will be reused."
+        let isRepair = compatibilityProfileExists(profile, context: context)
+        setLaunchStatus(
+            .launching,
+            for: game,
+            message: isRepair
+                ? "Repairing the \(profile.rawValue) profile…"
+                : "Preparing the \(profile.rawValue) profile and Steam…"
+        )
+        rightPanelMessage = isRepair
+            ? "Repairing the existing \(profile.rawValue) profile."
+            : "Creating \(profile.rawValue) on demand. Shared game files will be reused."
         executeDetached(
-            .setupCompatibilityProfile(profile),
-            successMessage: "\(profile.rawValue) is ready.",
+            isRepair ? .repairCompatibilityProfile(profile) : .setupCompatibilityProfile(profile),
+            successMessage: isRepair
+                ? "\(profile.rawValue) was repaired."
+                : "\(profile.rawValue) is ready.",
             context: context,
             game: game
         ) {
@@ -3534,10 +3569,13 @@ final class AppViewModel {
         }
 
         provisioningProfiles.insert(profile)
-        rightPanelMessage = "Creating the default DXMT profile and Steam…"
+        let isRepair = compatibilityProfileExists(profile, context: context)
+        rightPanelMessage = isRepair
+            ? "Repairing the default DXMT profile…"
+            : "Creating the default DXMT profile and Steam…"
         executeDetached(
-            .setupCompatibilityProfile(profile),
-            successMessage: "DXMT is ready.",
+            isRepair ? .repairCompatibilityProfile(profile) : .setupCompatibilityProfile(profile),
+            successMessage: isRepair ? "DXMT was repaired." : "DXMT is ready.",
             context: context
         ) {
             self.provisioningProfiles.remove(profile)
@@ -3693,6 +3731,9 @@ final class AppViewModel {
                         self.installingRuntimeID = nil
                     }
                     if case .setupCompatibilityProfile(let profile) = action {
+                        self.provisioningProfiles.remove(profile)
+                    }
+                    if case .repairCompatibilityProfile(let profile) = action {
                         self.provisioningProfiles.remove(profile)
                     }
                     if let game, actionLaunchGeneration == self.launchStateGeneration {

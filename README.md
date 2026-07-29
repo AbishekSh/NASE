@@ -38,8 +38,8 @@ working directory, and graphics backend. NASE supports:
 - **DXMT** — the recommended default for modern Direct3D games.
 - **D3DMetal** — an advanced profile using an imported, licensed Apple Game
   Porting Toolkit payload.
-- **DXVK-macOS** — an experimental Vulkan-based profile that requires a
-  compatible imported MoltenVK payload.
+- **DXVK-macOS** — an experimental Vulkan-based profile using the paired
+  MoltenVK payload included with NASE's managed Sikarugir Wine runtime.
 - **Plain Wine** — useful for launchers, utilities, and games that do not need
   a graphics translation override.
 
@@ -64,9 +64,9 @@ invalid files are discarded safely, and the app does not start source refreshes
 or background backend work until its bundled runtime passes preflight.
 
 Rosetta 2 is the one Apple-managed prerequisite on Apple Silicon and requires
-the user to accept Apple's license. Optional D3DMetal and MoltenVK components
-must be imported from a compatible licensed installation; NASE does not
-silently download or redistribute them.
+the user to accept Apple's license. D3DMetal must be imported from a compatible
+licensed installation. MoltenVK is included in the checksum-pinned Sikarugir
+Wine runtime downloaded internally for DXVK-macOS.
 
 The Recommended Gaming Environment guides a new installation through:
 

@@ -3,9 +3,15 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from mysteamwine.bottle import Bottle
-from mysteamwine.dxvk_macos import _gpu_from_dxvk_log, verify_dxvk_macos_profile
+from mysteamwine.dxvk_macos import (
+    PINNED_MOLTENVK_PAYLOADS,
+    _gpu_from_dxvk_log,
+    discover_moltenvk_source,
+    verify_dxvk_macos_profile,
+)
 
 
 def write_pe(path: Path, machine: int) -> None:
@@ -19,6 +25,21 @@ def write_pe(path: Path, machine: int) -> None:
 
 
 class DXVKMacOSProfileTests(unittest.TestCase):
+    def test_managed_sikarugir_wine_supplies_moltenvk_automatically(self) -> None:
+        root = Path(tempfile.mkdtemp(prefix="nase-managed-moltenvk-test-"))
+        wine = root / "bin" / "wine"
+        moltenvk = root / "lib" / "libMoltenVK.dylib"
+        wine.parent.mkdir(parents=True)
+        wine.write_bytes(b"wine")
+        moltenvk.parent.mkdir(parents=True)
+        moltenvk.write_bytes(b"managed-moltenvk")
+        supported_sha = next(iter(PINNED_MOLTENVK_PAYLOADS))
+
+        with patch("mysteamwine.dxvk_macos._sha256", return_value=supported_sha):
+            discovered = discover_moltenvk_source(wine)
+
+        self.assertEqual(discovered, moltenvk.resolve())
+
     def test_dxvk_log_gpu_parser_accepts_macos_device_format(self) -> None:
         text = "info:    Device name:     : Apple M2\n"
         self.assertEqual(_gpu_from_dxvk_log(text).lstrip(": "), "Apple M2")

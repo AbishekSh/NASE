@@ -224,7 +224,7 @@ struct SetupWizardSheet: View {
                                 dxvkSource = path
                             }
                         }
-                        Text("Experimental on macOS. DXVK also needs a compatible Wine Vulkan and MoltenVK host stack; downloading these DLLs alone does not enable Vulkan. The app keeps DXMT as the safe default.")
+                        Text("Experimental on macOS. NASE downloads the paired Sikarugir Wine, Wine Vulkan, MoltenVK, and DXVK-macOS components together. The app keeps DXMT as the safe default.")
                             .foregroundStyle(themeMutedForeground)
                         HStack(spacing: 10) {
                             Button {

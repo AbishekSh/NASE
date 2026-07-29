@@ -17,6 +17,7 @@ from typing import Callable
 from .bottle import Bottle, app_support_root
 from .dxmt import install_dxmt
 from .dxvk import install_dxvk
+from .dxvk_macos import PINNED_MOLTENVK_PAYLOADS
 
 
 @dataclass(frozen=True)
@@ -141,8 +142,8 @@ CATALOG: tuple[RuntimeCatalogEntry, ...] = (
         install_layout="dxvk-macos",
         license="zlib",
         notes=(
-            "Pinned macOS DXVK build for Sikarugir Wine 10 r6. The paired CodeWeavers MoltenVK 1.4.1 "
-            "library must be imported from a compatible Sikarugir wrapper and is checksum verified."
+            "Pinned macOS DXVK build for Sikarugir Wine 10 r6. NASE uses the checksum-verified MoltenVK "
+            "library included with its managed Sikarugir Wine runtime."
         ),
     ),
     RuntimeCatalogEntry(
@@ -156,7 +157,10 @@ CATALOG: tuple[RuntimeCatalogEntry, ...] = (
         archive_type="tar.xz",
         install_layout="sikarugir-wine",
         license="LGPL-2.1",
-        notes="Pinned Wine engine for the D3DMetal profile. Requires the paired Sikarugir D3DMetal framework bundle.",
+        notes=(
+            "Pinned Wine engine for D3DMetal and DXVK-macOS profiles. Includes the paired MoltenVK "
+            "library used automatically by DXVK-macOS; D3DMetal still requires its licensed framework bundle."
+        ),
     ),
     RuntimeCatalogEntry(
         id="dxvk-2.7.1",
@@ -685,6 +689,12 @@ def install_runtime(
             raise RuntimeError(f"Unexpected Sikarugir Wine engine version: {version or 'unknown'}")
         if not (extracted / "lib" / "wine").is_dir() or not (extracted / "share" / "wine").is_dir():
             raise RuntimeError("Sikarugir Wine archive is missing its lib/wine or share/wine runtime layout.")
+        moltenvk = extracted / "lib" / "libMoltenVK.dylib"
+        if not moltenvk.is_file():
+            raise RuntimeError("Sikarugir Wine archive is missing its paired MoltenVK library.")
+        moltenvk_sha = hashlib.sha256(moltenvk.read_bytes()).hexdigest()
+        if moltenvk_sha not in PINNED_MOLTENVK_PAYLOADS:
+            raise RuntimeError(f"Unexpected Sikarugir MoltenVK checksum: {moltenvk_sha}")
     installed = _record_install(entry, extracted, executable)
 
     if install_into_bottle and entry.kind in {"dxvk", "dxmt"}:

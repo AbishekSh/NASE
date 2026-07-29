@@ -594,6 +594,9 @@ enum BackendBridge {
                 "import sys; raise SystemExit(0 if (3, 10) <= sys.version_info < (3, 15) else 1)",
             ]
         }
+        process.environment = ProcessInfo.processInfo.environment.merging(
+            ["PYTHONDONTWRITEBYTECODE": "1"]
+        ) { _, appValue in appValue }
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         do {
@@ -623,6 +626,9 @@ enum BackendBridge {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
             process.arguments = [context.pythonCommand, "mysteamwine.py"] + arguments(for: action, context: context)
         }
+        process.environment = ProcessInfo.processInfo.environment.merging(
+            ["PYTHONDONTWRITEBYTECODE": "1"]
+        ) { _, appValue in appValue }
 
         let output = Pipe()
         process.standardOutput = output

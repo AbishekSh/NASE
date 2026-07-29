@@ -1015,7 +1015,7 @@ struct SettingsSheet: View {
                             }
                             .disabled(model.isBusy)
                         }
-                        Button("Set Up") {
+                        Button(model.compatibilityProfileExists(profile) ? "Repair" : "Set Up") {
                             model.setupCompatibilityProfile(profile)
                         }
                         .disabled(model.isBusy)

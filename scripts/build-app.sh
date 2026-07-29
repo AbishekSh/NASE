@@ -63,6 +63,7 @@ cp -R "$resource_bundle" "$app_path/Contents/Resources/"
 /usr/libexec/PlistBuddy -c "Set :NASEUpdatePublicKey $update_key" "$app_path/Contents/Info.plist"
 
 find "$app_path/Contents/Resources/Backend" -type d -name __pycache__ -prune -exec rm -rf {} +
+find "$python_framework" -type d -name __pycache__ -prune -exec rm -rf {} +
 while IFS= read -r executable; do
     if /usr/bin/file "$executable" | /usr/bin/grep -q 'Mach-O'; then
         codesign --force --timestamp --options runtime --sign "$sign_identity" "$executable"

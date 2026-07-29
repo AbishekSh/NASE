@@ -339,7 +339,7 @@ def _bind_launch_profile(args: argparse.Namespace, *, action: str, bottle, wine_
             graphics_backend=graphics_backend,
             wine_path=wine_path,
             graphics_source=Path(source_value) if source_value else None,
-            moltenvk_source=discover_moltenvk_source() if graphics_backend == "dxvk" else None,
+            moltenvk_source=discover_moltenvk_source(wine_path) if graphics_backend == "dxvk" else None,
         )
     except (RuntimeError, OSError) as exc:
         _json_error(args, action=action, message=f"Compatibility profile is not ready: {exc}")
@@ -595,7 +595,7 @@ def cmd_setup_compatibility_profile(args: argparse.Namespace) -> None:
     graphics_source = Path(source_value) if source_value else None
     moltenvk_source = Path(args.moltenvk_source) if args.moltenvk_source else None
     if graphics_backend == "dxvk" and moltenvk_source is None:
-        moltenvk_source = discover_moltenvk_source()
+        moltenvk_source = discover_moltenvk_source(wine64)
     root_existed = bottle.root.exists()
     manifest_path = bottle.root / "compatibility-profile.json"
     original_manifest = manifest_path.read_bytes() if manifest_path.is_file() else None
@@ -651,6 +651,7 @@ def cmd_setup_compatibility_profile(args: argparse.Namespace) -> None:
             graphics_source=graphics_source,
             moltenvk_source=moltenvk_source,
             require_ready=False,
+            allow_supported_moltenvk_migration=getattr(args, "repair", False),
         )
         active_manifest["setup_status"] = "setting-up"
         active_manifest["active_job_id"] = job_id

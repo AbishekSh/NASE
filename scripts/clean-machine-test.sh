@@ -24,8 +24,8 @@ plutil -lint "$app/Contents/Info.plist"
 codesign --verify --deep --strict --verbose=2 "$app"
 
 HOME="$test_home" PYTHONPYCACHEPREFIX="$test_home/pycache" "$bundled_python" -m compileall -q "$backend/mysteamwine" "$backend/mysteamwine.py"
-HOME="$test_home" PATH="/usr/bin:/bin:/usr/sbin:/sbin" "$bundled_python" "$backend/mysteamwine.py" --json list-jobs --limit 1 > "$test_home/jobs.json"
-"$bundled_python" -c 'import json,sys; payload=json.load(open(sys.argv[1])); assert payload["ok"] is True' "$test_home/jobs.json"
+HOME="$test_home" PATH="/usr/bin:/bin:/usr/sbin:/sbin" PYTHONDONTWRITEBYTECODE=1 "$bundled_python" "$backend/mysteamwine.py" --json list-jobs --limit 1 > "$test_home/jobs.json"
+PYTHONDONTWRITEBYTECODE=1 "$bundled_python" -c 'import json,sys; payload=json.load(open(sys.argv[1])); assert payload["ok"] is True' "$test_home/jobs.json"
 
 if [[ ${NASE_SKIP_LAUNCH_SMOKE:-0} != 1 ]]; then
     HOME="$test_home" "$app/Contents/MacOS/SteamWineApp" > "$test_home/app.log" 2>&1 &

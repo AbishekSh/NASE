@@ -11,7 +11,7 @@ from .bottle import Bottle
 from .catalog import list_installed_runtimes
 from .d3dmetal import inspect_d3dmetal_bundle
 from .gptk import inspect_gptk_installation
-from .dxvk_macos import inspect_dxvk_macos_stack
+from .dxvk_macos import PINNED_MOLTENVK_PAYLOADS, inspect_dxvk_macos_stack
 
 
 @dataclass(frozen=True)
@@ -141,6 +141,7 @@ def bind_profile(
     graphics_source: Path | None,
     moltenvk_source: Path | None = None,
     require_ready: bool = True,
+    allow_supported_moltenvk_migration: bool = False,
 ) -> dict:
     profile = profile_for(profile_id, graphics_backend)
     wine_version = _wine_version(wine_path)
@@ -212,13 +213,31 @@ def bind_profile(
             comparable_keys.append("graphics_source_fingerprint")
         existing_moltenvk_sha = (existing.get("dxvk_macos_stack") or {}).get("moltenvk_sha256")
         current_moltenvk_sha = (fingerprint.get("dxvk_macos_stack") or {}).get("moltenvk_sha256")
-        if not (existing_moltenvk_sha and existing_moltenvk_sha == current_moltenvk_sha):
+        supported_moltenvk_migration = (
+            allow_supported_moltenvk_migration
+            and profile.id == "dxvk-macos-pinned-v1"
+            and existing_moltenvk_sha in PINNED_MOLTENVK_PAYLOADS
+            and current_moltenvk_sha in PINNED_MOLTENVK_PAYLOADS
+        )
+        if not (
+            existing_moltenvk_sha
+            and (
+                existing_moltenvk_sha == current_moltenvk_sha
+                or supported_moltenvk_migration
+            )
+        ):
             comparable_keys.append("moltenvk_source_fingerprint")
         if any(existing.get(key) != fingerprint.get(key) for key in comparable_keys):
             raise RuntimeError(
                 f"Bottle '{bottle.name}' is already bound to a different compatibility stack. "
                 "Choose its original profile or create a new profile bottle."
             )
+        if supported_moltenvk_migration and existing_moltenvk_sha != current_moltenvk_sha:
+            existing["dxvk_macos_stack"] = fingerprint["dxvk_macos_stack"]
+            existing["moltenvk_source_fingerprint"] = fingerprint["moltenvk_source_fingerprint"]
+            temporary = manifest_path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(existing, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            temporary.replace(manifest_path)
         if profile.id == "d3dmetal-gptk-v1" and existing.get("graphics_source") != fingerprint.get("graphics_source"):
             existing["graphics_source"] = fingerprint["graphics_source"]
             existing["gptk_installation_root"] = fingerprint["gptk_installation_root"]

@@ -176,7 +176,7 @@ Current Steam launch modes are:
 
 Graphics-specific modules own file-layout validation and registry override edits. D3DMetal keeps its `wine`, `external`, and framework directories intact; launch modules obtain the complete environment from `d3dmetal.py` and inject it for every Steam and direct-game process.
 
-Treat each graphics choice as a runtime profile, not only a DLL selection. DXMT uses the validated Wine Stable context. D3DMetal pins checksum-verified Sikarugir Wine 10 revision 6 to a complete renderer bundle plus an isolated `-D3DMetal` bottle. DXVK requires a separately validated Wine Vulkan/MoltenVK host stack. These renderer modes are mutually exclusive, and a successful DLL copy alone does not prove that the host graphics runtime can launch a game.
+Treat each graphics choice as a runtime profile, not only a DLL selection. DXMT uses the validated Wine Stable context. D3DMetal pins checksum-verified Sikarugir Wine 10 revision 6 to a complete renderer bundle plus an isolated `-D3DMetal` bottle. DXVK uses the Wine Vulkan and checksum-verified MoltenVK payload bundled inside the managed Sikarugir runtime. These renderer modes are mutually exclusive, and a successful DLL copy alone does not prove that the host graphics runtime can launch a game.
 
 ### Health, Dependencies, And Advice
 

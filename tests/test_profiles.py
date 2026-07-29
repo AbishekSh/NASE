@@ -125,6 +125,80 @@ class CompatibilityProfileTests(unittest.TestCase):
 
         self.assertEqual(ready["setup_status"], "ready")
 
+    def test_dxvk_repair_migrates_between_approved_moltenvk_payloads(self) -> None:
+        dxvk_source = self.bottle.root / "dxvk"
+        moltenvk_source = self.bottle.root / "libMoltenVK.dylib"
+        dxvk_source.mkdir()
+        moltenvk_source.write_bytes(b"pinned-moltenvk")
+        approved_hashes = list(profiles.PINNED_MOLTENVK_PAYLOADS)
+        self.assertGreaterEqual(len(approved_hashes), 2)
+
+        with (
+            patch.object(profiles, "_wine_version", return_value="wine-10.0 (Sikarugir)"),
+            patch.object(profiles, "_runtime_id_for_source", return_value="dxvk-macos-1.10.3-20230507-repack"),
+            patch.object(
+                profiles,
+                "inspect_dxvk_macos_stack",
+                return_value={"moltenvk_sha256": approved_hashes[0], "moltenvk_source": "/old/source"},
+            ),
+            patch.object(profiles, "_source_fingerprint", side_effect=["dxvk", "moltenvk-old"]),
+        ):
+            profiles.bind_profile(
+                bottle=self.bottle,
+                profile_id="dxvk-macos-pinned-v1",
+                graphics_backend="dxvk",
+                wine_path=Path("/runtime/sikarugir-wine"),
+                graphics_source=dxvk_source,
+                moltenvk_source=moltenvk_source,
+                require_ready=False,
+            )
+
+        with (
+            patch.object(profiles, "_wine_version", return_value="wine-10.0 (Sikarugir)"),
+            patch.object(profiles, "_runtime_id_for_source", return_value="dxvk-macos-1.10.3-20230507-repack"),
+            patch.object(
+                profiles,
+                "inspect_dxvk_macos_stack",
+                return_value={"moltenvk_sha256": approved_hashes[1], "moltenvk_source": "/managed/source"},
+            ),
+            patch.object(profiles, "_source_fingerprint", side_effect=["dxvk", "moltenvk-managed"]),
+            self.assertRaisesRegex(RuntimeError, "different compatibility stack"),
+        ):
+            profiles.bind_profile(
+                bottle=self.bottle,
+                profile_id="dxvk-macos-pinned-v1",
+                graphics_backend="dxvk",
+                wine_path=Path("/runtime/sikarugir-wine"),
+                graphics_source=dxvk_source,
+                moltenvk_source=moltenvk_source,
+                require_ready=False,
+            )
+
+        with (
+            patch.object(profiles, "_wine_version", return_value="wine-10.0 (Sikarugir)"),
+            patch.object(profiles, "_runtime_id_for_source", return_value="dxvk-macos-1.10.3-20230507-repack"),
+            patch.object(
+                profiles,
+                "inspect_dxvk_macos_stack",
+                return_value={"moltenvk_sha256": approved_hashes[1], "moltenvk_source": "/managed/source"},
+            ),
+            patch.object(profiles, "_source_fingerprint", side_effect=["dxvk", "moltenvk-managed"]),
+        ):
+            migrated = profiles.bind_profile(
+                bottle=self.bottle,
+                profile_id="dxvk-macos-pinned-v1",
+                graphics_backend="dxvk",
+                wine_path=Path("/runtime/sikarugir-wine"),
+                graphics_source=dxvk_source,
+                moltenvk_source=moltenvk_source,
+                require_ready=False,
+                allow_supported_moltenvk_migration=True,
+            )
+
+        self.assertEqual(migrated["dxvk_macos_stack"]["moltenvk_sha256"], approved_hashes[1])
+        persisted = json.loads((self.bottle.root / "compatibility-profile.json").read_text(encoding="utf-8"))
+        self.assertEqual(persisted["dxvk_macos_stack"]["moltenvk_source"], "/managed/source")
+
     def test_dxmt_profile_requires_wine_11(self) -> None:
         with (
             patch.object(profiles, "_wine_version", return_value="wine-10.0"),
