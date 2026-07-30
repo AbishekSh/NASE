@@ -227,8 +227,33 @@ struct BackendJob: Identifiable, Hashable {
 enum GameLaunchPhase: String, Codable, Hashable {
     case launching = "Launching..."
     case running = "Running"
+    case stopping = "Stopping..."
     case exited = "Exited"
     case failed = "Failed"
+
+    init(sessionStatus: String) {
+        switch sessionStatus {
+        case "running":
+            self = .running
+        case "stopping":
+            self = .stopping
+        case "failed":
+            self = .failed
+        case "launching":
+            self = .launching
+        default:
+            self = .exited
+        }
+    }
+
+    var isActive: Bool {
+        switch self {
+        case .launching, .running, .stopping:
+            true
+        case .exited, .failed:
+            false
+        }
+    }
 }
 
 struct GameLaunchStatus: Hashable, Codable {

@@ -105,4 +105,14 @@ final class BackendBridgeTests: XCTestCase {
             )
         )
     }
+
+    func testLaunchSessionStatusesMapToDistinctUIPhases() {
+        XCTAssertEqual(GameLaunchPhase(sessionStatus: "launching"), .launching)
+        XCTAssertEqual(GameLaunchPhase(sessionStatus: "running"), .running)
+        XCTAssertEqual(GameLaunchPhase(sessionStatus: "stopping"), .stopping)
+        XCTAssertEqual(GameLaunchPhase(sessionStatus: "exited"), .exited)
+        XCTAssertEqual(GameLaunchPhase(sessionStatus: "failed"), .failed)
+        XCTAssertTrue(GameLaunchPhase.stopping.isActive)
+        XCTAssertFalse(GameLaunchPhase.exited.isActive)
+    }
 }

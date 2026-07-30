@@ -51,6 +51,19 @@ class LaunchSessionTests(unittest.TestCase):
         }
         self.assertEqual(sessions._matching_pids(session, processes, set()), [10])
 
+    def test_same_executable_name_from_another_install_does_not_keep_session_running(self) -> None:
+        session = {
+            "executable": "/library/Expected Game/game.exe",
+            "install_dir": "/library/Expected Game",
+            "prefix": str(self.bottle.prefix),
+            "pids": [],
+        }
+        processes = {
+            10: r"C:\Games\Different Game\game.exe",
+            11: r"C:\Games\Expected Game\game.exe",
+        }
+        self.assertEqual(sessions._matching_pids(session, processes, set()), [11])
+
     def test_reconcile_and_stop_one_process(self) -> None:
         proc = subprocess.Popen(["/bin/sleep", "30"], cwd=self.bottle.prefix)
         try:

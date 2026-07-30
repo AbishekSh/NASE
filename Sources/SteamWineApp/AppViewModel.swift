@@ -450,7 +450,7 @@ final class AppViewModel {
 
     func stop(_ game: LibraryGame) {
         guard let session = launchSessionByPinID[game.pinID], session.isActive else { return }
-        setLaunchStatus(.launching, for: game, message: "Stopping...")
+        setLaunchStatus(.stopping, for: game, message: "Stopping...")
         let context = effectiveContext(for: game)
         Task.detached(priority: .userInitiated) {
             do {
@@ -505,14 +505,12 @@ final class AppViewModel {
         for game in nativeApps + discoveredSteamGames + wineApps {
             if let session = sessions.last(where: { launchSession($0, belongsTo: game) }) {
                 launchSessionByPinID[game.pinID] = session
-                let phase: GameLaunchPhase = switch session.status {
-                case "running": .running
-                case "launching", "stopping": .launching
-                case "failed": .failed
-                default: .exited
-                }
+                let phase = GameLaunchPhase(sessionStatus: session.status)
                 setLaunchStatus(phase, for: game, message: session.message)
-            } else if [.running, .launching].contains(launchStatusByPinID[game.pinID]?.phase) {
+                if !phase.isActive {
+                    launchSessionByPinID.removeValue(forKey: game.pinID)
+                }
+            } else if launchStatusByPinID[game.pinID]?.phase.isActive == true {
                 setLaunchStatus(.exited, for: game, message: "Game process exited.")
                 launchSessionByPinID.removeValue(forKey: game.pinID)
             }

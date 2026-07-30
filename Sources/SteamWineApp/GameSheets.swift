@@ -576,6 +576,8 @@ struct GameDetailsSheet: View {
         switch phase {
         case .launching:
             return Color(hex: "#D9B650")
+        case .stopping:
+            return Color(hex: "#D96C6C")
         case .running:
             return Color(hex: "#6DBB7A")
         case .exited:

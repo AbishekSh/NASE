@@ -167,7 +167,7 @@ struct GameCard: View {
                     .overlay(Circle().stroke(.white.opacity(0.25), lineWidth: 1))
                 }
                 .buttonStyle(.plain)
-                .disabled(launchStatus?.phase == .launching)
+                .disabled(launchStatus?.phase == .launching || launchStatus?.phase == .stopping)
                 .help(primaryActionHelp)
                 .padding(10)
                 .scaleEffect(isHovered ? 1.05 : 1.0)
@@ -348,7 +348,7 @@ struct GameCard: View {
                 }
             }
             .buttonStyle(.plain)
-            .disabled(launchStatus?.phase == .launching)
+            .disabled(launchStatus?.phase == .launching || launchStatus?.phase == .stopping)
             .help(primaryActionHelp)
             .padding(.trailing, 12)
         }
@@ -389,6 +389,8 @@ struct GameCard: View {
         switch phase {
         case .launching:
             return theme.accentAmber.opacity(0.18)
+        case .stopping:
+            return theme.accentRed.opacity(0.18)
         case .running:
             return theme.accentGreen.opacity(0.18)
         case .exited:
@@ -402,6 +404,8 @@ struct GameCard: View {
         switch phase {
         case .launching:
             return theme.accentAmber
+        case .stopping:
+            return theme.accentRed
         case .running:
             return theme.accentGreen
         case .exited:
