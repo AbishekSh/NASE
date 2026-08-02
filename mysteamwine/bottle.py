@@ -25,12 +25,18 @@ class Bottle:
 def _replace_managed_path(path: Path, old_root: Path, new_root: Path) -> None:
     temporary = path.with_name(f".{path.name}.nase-migration")
     try:
-        if not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
+        size_limit = 32 * 1024 * 1024 if path.suffix.lower() == ".reg" else 2 * 1024 * 1024
+        if not path.is_file() or path.stat().st_size > size_limit:
             return
         original = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return
     updated = original.replace(str(old_root), str(new_root))
+    for slash_count in (1, 2):
+        separator = "\\" * slash_count
+        old_wine_path = "Z:" + str(old_root).replace("/", separator)
+        new_wine_path = "Z:" + str(new_root).replace("/", separator)
+        updated = updated.replace(old_wine_path, new_wine_path)
     if updated == original:
         return
     try:
@@ -45,8 +51,28 @@ def _replace_managed_path(path: Path, old_root: Path, new_root: Path) -> None:
             pass
 
 
+def _replace_managed_symlink(path: Path, old_root: Path, new_root: Path) -> None:
+    try:
+        target = path.readlink()
+    except OSError:
+        return
+    updated = str(target).replace(str(old_root), str(new_root))
+    if updated == str(target):
+        return
+    try:
+        path.unlink()
+        path.symlink_to(updated)
+    except OSError:
+        # A failed replacement must not leave a previously valid link missing.
+        try:
+            if not path.exists() and not path.is_symlink():
+                path.symlink_to(target)
+        except OSError:
+            pass
+
+
 def _rewrite_migrated_metadata(old_root: Path, new_root: Path) -> None:
-    marker = new_root / ".nase-data-root-v1"
+    marker = new_root / ".nase-data-root-v3"
     if marker.exists():
         return
     candidates: set[Path] = set(new_root.glob("*.json"))
@@ -58,6 +84,13 @@ def _rewrite_migrated_metadata(old_root: Path, new_root: Path) -> None:
         bottles = new_root / "bottles"
         if bottles.is_dir():
             candidates.update(bottles.rglob(name))
+    bottles = new_root / "bottles"
+    if bottles.is_dir():
+        candidates.update(bottles.rglob("libraryfolders.vdf"))
+        candidates.update(bottles.rglob("*.reg"))
+        candidates.update(bottles.rglob("savedatapath.txt"))
+        for link in (path for path in bottles.rglob("*") if path.is_symlink()):
+            _replace_managed_symlink(link, old_root, new_root)
     installed = new_root / "runtimes" / "installed.json"
     if installed.is_file():
         candidates.add(installed)

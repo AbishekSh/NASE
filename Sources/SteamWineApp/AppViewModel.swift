@@ -470,31 +470,36 @@ final class AppViewModel {
     }
 
     private func refreshLaunchSessions() {
+        Task { [weak self] in
+            await self?.refreshLaunchSessionsNow()
+        }
+    }
+
+    private func refreshLaunchSessionsNow() async {
         guard !isRefreshingLaunchSessions else { return }
         isRefreshingLaunchSessions = true
         let context = backendContext
-        Task.detached(priority: .utility) {
+        let response = await Task.detached(priority: .utility) {
             let response = try? await BackendBridge.execute(.listSessions, context: context)
-            await MainActor.run {
-                self.isRefreshingLaunchSessions = false
-                if let response {
-                    self.applyLaunchSessions(response.sessions)
-                }
-            }
+            return response
+        }.value
+        isRefreshingLaunchSessions = false
+        if let response {
+            applyLaunchSessions(response.sessions)
         }
     }
 
     private func reconcileLaunchStateAfterHandoff(for game: LibraryGame, generation: Int) {
         Task { [weak self] in
-            for delay in [1, 2, 3, 5] {
+            while !Task.isCancelled {
                 do {
-                    try await Task.sleep(for: .seconds(delay))
+                    try await Task.sleep(for: .seconds(2))
                 } catch {
                     return
                 }
                 guard let self, generation == self.launchStateGeneration else { return }
-                self.refreshLaunchSessions()
-                if self.launchStatusByPinID[game.pinID]?.phase != .launching {
+                await self.refreshLaunchSessionsNow()
+                if self.launchStatusByPinID[game.pinID]?.phase.isActive != true {
                     return
                 }
             }
@@ -510,7 +515,8 @@ final class AppViewModel {
                 if !phase.isActive {
                     launchSessionByPinID.removeValue(forKey: game.pinID)
                 }
-            } else if launchStatusByPinID[game.pinID]?.phase.isActive == true {
+            } else if launchSessionByPinID[game.pinID]?.isActive == true,
+                      launchStatusByPinID[game.pinID]?.phase.isActive == true {
                 setLaunchStatus(.exited, for: game, message: "Game process exited.")
                 launchSessionByPinID.removeValue(forKey: game.pinID)
             }
@@ -2278,7 +2284,7 @@ final class AppViewModel {
         launchSessionMonitor = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                self.refreshLaunchSessions()
+                await self.refreshLaunchSessionsNow()
                 do {
                     try await Task.sleep(for: .seconds(3))
                 } catch {
@@ -3704,7 +3710,7 @@ final class AppViewModel {
                         } else {
                             self.applyLaunchSessions(response.sessions)
                         }
-                        if self.launchStatusByPinID[game.pinID]?.phase == .launching {
+                        if self.launchStatusByPinID[game.pinID]?.phase.isActive == true {
                             self.reconcileLaunchStateAfterHandoff(
                                 for: game,
                                 generation: actionLaunchGeneration
