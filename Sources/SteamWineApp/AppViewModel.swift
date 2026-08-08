@@ -4,6 +4,27 @@ import Foundation
 import Observation
 import UniformTypeIdentifiers
 
+/// Watches one PID for termination via kqueue (EVFILT_PROC/NOTE_EXIT) so a
+/// game's exit is observed the instant it happens instead of waiting for the
+/// next poll. This only tells us "wake up and reconcile now" — reconcile
+/// against the backend's session record remains the source of truth for
+/// whether the game actually exited.
+private final class ExitWatcher {
+    let pid: Int
+    private let source: DispatchSourceProcess
+
+    init(pid: Int, onExit: @escaping () -> Void) {
+        self.pid = pid
+        source = DispatchSource.makeProcessSource(identifier: pid_t(pid), eventMask: .exit, queue: .main)
+        source.setEventHandler(handler: onExit)
+        source.resume()
+    }
+
+    deinit {
+        source.cancel()
+    }
+}
+
 private enum LibraryStorageKey {
     static let nativeApps = "library.nativeApps"
     static let wineApps = "library.wineApps"
@@ -184,6 +205,7 @@ final class AppViewModel {
     private(set) var launchSessionByPinID: [String: GameLaunchSession] = [:]
     private var launchStateGeneration = 0
     @ObservationIgnored private var launchSessionMonitor: Task<Void, Never>?
+    @ObservationIgnored private var exitWatchersBySessionID: [String: [ExitWatcher]] = [:]
     fileprivate var steamMetadataByAppID: [String: SteamLocalMetadata] = [:]
     private var runningHealthChecks = Set<RunnerKind>()
     private var isRefreshingLaunchSessions = false
@@ -446,6 +468,7 @@ final class AppViewModel {
         launchSessionByPinID = launchSessionByPinID.filter { pinID, _ in
             !windowsGameIDs.contains(pinID)
         }
+        syncExitWatchers()
     }
 
     func stop(_ game: LibraryGame) {
@@ -508,19 +531,69 @@ final class AppViewModel {
 
     private func applyLaunchSessions(_ sessions: [GameLaunchSession]) {
         for game in nativeApps + discoveredSteamGames + wineApps {
+            let wasActive = launchStatusByPinID[game.pinID]?.phase.isActive == true
             if let session = sessions.last(where: { launchSession($0, belongsTo: game) }) {
                 launchSessionByPinID[game.pinID] = session
                 let phase = GameLaunchPhase(sessionStatus: session.status)
                 setLaunchStatus(phase, for: game, message: session.message)
                 if !phase.isActive {
                     launchSessionByPinID.removeValue(forKey: game.pinID)
+                    if wasActive {
+                        refreshLibraryMetadata(for: game)
+                    }
                 }
-            } else if launchSessionByPinID[game.pinID]?.isActive == true,
-                      launchStatusByPinID[game.pinID]?.phase.isActive == true {
+            } else if launchSessionByPinID[game.pinID]?.isActive == true, wasActive {
                 setLaunchStatus(.exited, for: game, message: "Game process exited.")
                 launchSessionByPinID.removeValue(forKey: game.pinID)
+                refreshLibraryMetadata(for: game)
             }
         }
+        syncExitWatchers()
+    }
+
+    /// Refresh the source library a game belongs to after it exits, so playtime
+    /// and last-played state reflect the just-finished session promptly instead
+    /// of waiting for the next unrelated refresh.
+    private func refreshLibraryMetadata(for game: LibraryGame) {
+        switch game.runner {
+        case .steam:
+            refreshSteamGames(announce: false)
+        case .epic:
+            refreshEpicLibrary(forceRefresh: false)
+        case .gog:
+            refreshGOGLibrary(forceRefresh: false)
+        case .home, .mac, .wine:
+            break
+        }
+    }
+
+    /// Keep one ExitWatcher per PID of every currently active launch session,
+    /// so a game's death is observed immediately rather than on the next poll.
+    private func syncExitWatchers() {
+        let activeSessions = launchSessionByPinID.values.filter(\.isActive)
+        let activeSessionIDs = Set(activeSessions.map(\.sessionID))
+        for sessionID in exitWatchersBySessionID.keys where !activeSessionIDs.contains(sessionID) {
+            exitWatchersBySessionID.removeValue(forKey: sessionID)
+        }
+        for session in activeSessions {
+            let currentPIDs = Set(session.pids)
+            guard !currentPIDs.isEmpty else { continue }
+            let watchedPIDs = Set((exitWatchersBySessionID[session.sessionID] ?? []).map(\.pid))
+            guard currentPIDs != watchedPIDs else { continue }
+            let sessionID = session.sessionID
+            exitWatchersBySessionID[sessionID] = currentPIDs.map { pid in
+                ExitWatcher(pid: pid) { [weak self] in
+                    Task { @MainActor [weak self] in
+                        self?.handleWatchedProcessExit(sessionID: sessionID)
+                    }
+                }
+            }
+        }
+    }
+
+    private func handleWatchedProcessExit(sessionID: String) {
+        guard exitWatchersBySessionID[sessionID] != nil else { return }
+        refreshLaunchSessions()
     }
 
     private func launchSession(_ session: GameLaunchSession, belongsTo game: LibraryGame) -> Bool {
@@ -1947,6 +2020,7 @@ final class AppViewModel {
                 _ = try await BackendBridge.execute(.killWine, context: context)
                 launchSessionMonitor?.cancel()
                 launchSessionMonitor = nil
+                exitWatchersBySessionID.removeAll()
                 launchStateGeneration += 1
                 uninstallStatusMessage = removeManagedData
                     ? "Removing NASE-managed data and settings…"
