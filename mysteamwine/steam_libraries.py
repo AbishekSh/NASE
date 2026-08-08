@@ -11,8 +11,9 @@ from typing import Any
 import uuid
 
 from .bottle import Bottle, app_support_root, bottle_paths, list_bottle_roots
+from .library_activity import shared_steam_client_owner
 from .sessions import steam_is_running
-from .steam import SteamApp, parse_vdf_file, steam_prefix_root, steamapps_dirs, wine_path_to_host
+from .steam import SteamApp, parse_vdf_file, steam_core_root, steam_prefix_root, steamapps_dirs, wine_path_to_host
 
 
 SCHEMA_VERSION = 1
@@ -300,6 +301,11 @@ def _attach_registered_libraries_unlocked(
     steam_exe = steam_prefix_root(bottle) / "Steam.exe"
     if not steam_exe.is_file():
         raise RuntimeError(f"Steam is not installed in profile bottle '{bottle.name}'.")
+    owner = shared_steam_client_owner()
+    owner_prefix = str((owner or {}).get("prefix") or "")
+    if owner_prefix and owner_prefix != str(bottle.prefix) and steam_is_running(owner_prefix):
+        owner_name = owner.get("bottle") or "another profile"
+        raise RuntimeError(f"Close Steam in '{owner_name}' before attaching shared libraries.")
     if steam_is_running(str(bottle.prefix)):
         raise RuntimeError(f"Close Steam in '{bottle.name}' before attaching shared libraries.")
 
@@ -403,7 +409,11 @@ def attach_registered_libraries(
     library_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     bottle.root.mkdir(parents=True, exist_ok=True)
-    lock_path = bottle.root / ".library-attachment.lock"
+    # libraryfolders.vdf lives inside the shared Steam client once a bottle is
+    # sharing it, so this lock must be global rather than per-bottle to avoid
+    # two profiles racing on the same physical file.
+    lock_path = steam_core_root().parent / ".library-attachment.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+", encoding="utf-8") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:

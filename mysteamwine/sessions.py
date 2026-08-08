@@ -11,6 +11,7 @@ import uuid
 from typing import Any
 
 from .bottle import Bottle, app_support_root
+from .library_activity import reconcile_shared_steam_client
 
 
 ACTIVE_STATUSES = {"launching", "running", "stopping"}
@@ -250,6 +251,7 @@ def mark_steam_opened_by_user(prefix: str) -> None:
 
 
 def reconcile_sessions() -> list[dict[str, Any]]:
+    reconcile_shared_steam_client()
     sessions = _load()
     processes = _processes()
     now = time.time()

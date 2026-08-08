@@ -44,6 +44,7 @@ from .runtime import detect_wine_runtime, is_apple_silicon, resolve_executable, 
 from .scanner import scan_game_dir
 from .sessions import create_session, mark_steam_opened_by_user, reconcile_sessions, steam_is_running, stop_session, update_session
 from .steam import (
+    ensure_shared_steam,
     graphics_launch_environment,
     guess_game_executable,
     install_steam,
@@ -51,6 +52,7 @@ from .steam import (
     kill_wine_processes,
     launch_app,
     probe_steam_stability,
+    promote_to_shared_steam,
     run_game_executable,
     steam_client_is_ready,
     steam_prefix_root,
@@ -684,6 +686,7 @@ def cmd_setup_compatibility_profile(args: argparse.Namespace) -> None:
                     total_steps=setup_total_steps,
                 )
         ensure_bottle_dirs(bottle)
+        ensure_shared_steam(bottle)
         steam_exe = bottle.drive_c / "Program Files (x86)" / "Steam" / "Steam.exe"
         initialized_prefix = (bottle.prefix / "system.reg").is_file() and steam_exe.is_file()
         if initialized_prefix:
@@ -729,6 +732,7 @@ def cmd_setup_compatibility_profile(args: argparse.Namespace) -> None:
                     wine_path=wine64,
                 ),
             )
+            promote_to_shared_steam(bottle)
         if graphics_backend == "dxmt":
             run_step(
                 "install-graphics",

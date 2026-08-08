@@ -121,6 +121,64 @@ def _rewrite_migrated_metadata(old_root: Path, new_root: Path) -> None:
         pass
 
 
+def _consolidate_shared_steam_clients(root: Path) -> None:
+    """One-time: replace each profile's own Steam install with a shared client symlink.
+
+    Builds every path directly from the already-resolved `root` instead of
+    going through bottle_paths()/steam_prefix_root()/steam_core_root(), which
+    all call back into app_support_root() and would recurse into this
+    function again before its completion marker is written.
+    """
+    marker = root / ".nase-shared-steam-v1"
+    if marker.exists():
+        return
+    from .sessions import steam_is_running
+
+    bottles_dir = root / "bottles"
+    if not bottles_dir.is_dir():
+        return
+    steam_dirs = [
+        child / "prefix" / "drive_c" / "Program Files (x86)" / "Steam"
+        for child in sorted(bottles_dir.iterdir())
+        if child.is_dir()
+    ]
+    if any(steam_is_running(str(steam_dir.parent.parent.parent)) for steam_dir in steam_dirs):
+        return  # Retry next time; don't disturb a profile with Steam open.
+    core = root / "steam-core" / "Steam"
+    try:
+        if not (core / "Steam.exe").is_file():
+            for candidate in steam_dirs:
+                if candidate.is_dir() and not candidate.is_symlink() and (candidate / "Steam.exe").is_file():
+                    core.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(candidate), str(core))
+                    candidate.symlink_to(core)
+                    break
+        if (core / "Steam.exe").is_file():
+            for candidate in steam_dirs:
+                if candidate.is_symlink() or candidate.resolve() == core.resolve():
+                    continue
+                if candidate.is_dir() and (candidate / "Steam.exe").is_file():
+                    local_manifests = list((candidate / "steamapps").glob("appmanifest_*.acf"))
+                    if local_manifests:
+                        # This profile has its own locally installed games outside
+                        # the shared library; leave it as an independent client
+                        # rather than risk deleting them.
+                        continue
+                    shutil.rmtree(candidate)
+                if not candidate.exists():
+                    candidate.parent.mkdir(parents=True, exist_ok=True)
+                    candidate.symlink_to(core)
+    except OSError:
+        return
+    try:
+        marker.write_text(
+            "Consolidated per-profile Steam installs into the shared steam-core client.\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
 def app_support_root() -> Path:
     support = Path.home() / "Library" / "Application Support"
     root = support / APP_NAME
@@ -133,6 +191,7 @@ def app_support_root() -> Path:
             return legacy
     if root.exists():
         _rewrite_migrated_metadata(legacy, root)
+        _consolidate_shared_steam_clients(root)
     return root
 
 
