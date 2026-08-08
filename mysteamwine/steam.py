@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
+import fcntl
 import os
 from pathlib import Path
 import shutil
@@ -12,6 +13,7 @@ from typing import Any, Iterator
 
 from . import DEFAULT_STEAM_WINDOWS_PATH, STEAM_SETUP_URL
 from .bottle import Bottle, app_support_root, ensure_bottle_dirs
+from .library_activity import acquire_shared_steam_client, release_shared_steam_client
 from .runtime import download, run_logged, run_logged_detached, supports_wow64
 from .pe import executable_architecture
 from .d3dmetal import d3dmetal_launch_environment
@@ -280,15 +282,63 @@ def graphics_launch_environment(
     return _graphics_launch_env(bottle, "-all", graphics_backend, graphics_source)
 
 
+def steam_core_root() -> Path:
+    """Return the single Steam client shared by every compatibility profile."""
+    return app_support_root() / "steam-core" / "Steam"
+
+
+def ensure_shared_steam(bottle: Bottle) -> bool:
+    """Point this bottle's Steam directory at the shared client if one already exists.
+
+    Returns True once this bottle has a working Steam install (whether newly
+    symlinked or already present), so callers can skip installing Steam here.
+    """
+    target = steam_prefix_root(bottle)
+    core = steam_core_root()
+    if target.is_symlink():
+        return (core / "Steam.exe").is_file() and target.resolve() == core.resolve()
+    if target.is_dir():
+        return (target / "Steam.exe").is_file()
+    if not (core / "Steam.exe").is_file():
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.symlink_to(core)
+    return True
+
+
+def promote_to_shared_steam(bottle: Bottle) -> None:
+    """Make this bottle's freshly installed Steam the shared client for every profile."""
+    target = steam_prefix_root(bottle)
+    if target.is_symlink() or not (target / "Steam.exe").is_file():
+        return
+    core = steam_core_root()
+    core.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = core.parent / ".promotion.lock"
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        if (core / "Steam.exe").is_file():
+            # Another profile promoted its client first; adopt it instead.
+            shutil.rmtree(target)
+            target.symlink_to(core)
+            return
+        shutil.move(str(target), str(core))
+        target.symlink_to(core)
+
+
 def install_steam(*, bottle: Bottle, wine64_path: Path) -> tuple[int, str]:
     ensure_bottle_dirs(bottle)
+    if ensure_shared_steam(bottle):
+        return 0, "Steam is already installed via the shared client."
     installer = steam_setup_exe(bottle)
     download(STEAM_SETUP_URL, installer)
-    return run_logged(
+    code, tail = run_logged(
         cmd=[str(wine64_path), str(installer)],
         env={"WINEPREFIX": str(bottle.prefix), "WINEDEBUG": "-all"},
         log_file=bottle.logs / "02_install_steam.log",
     )
+    if code == 0:
+        promote_to_shared_steam(bottle)
+    return code, tail
 
 
 def run_steam(
@@ -304,12 +354,17 @@ def run_steam(
     graphics_source: Path | None = None,
 ) -> tuple[int, str]:
     ensure_bottle_dirs(bottle)
+    ensure_shared_steam(bottle)
     if native_macos_steam_is_running():
         return 1, (
             "macOS Steam is currently running and owns Steam's local communication port. "
             "Choose Steam > Quit Steam in the macOS Steam menu, wait for it to close, then try again. "
             "Closing only the Steam window is not enough."
         )
+    try:
+        acquire_shared_steam_client(prefix=str(bottle.prefix), bottle=bottle.name)
+    except RuntimeError as exc:
+        return 1, str(exc)
     wineserver = _wineserver_path(wine64_path)
     env = _graphics_launch_env(bottle, "-all", graphics_backend, graphics_source)
     if extra_env:
@@ -397,7 +452,10 @@ def run_steam(
         code = open_code
     else:
         tail = "\n".join(part for part in (shutdown_tail, tail) if part)
-    if code != 0 or not wait:
+    if code != 0:
+        release_shared_steam_client(prefix=str(bottle.prefix))
+        return code, tail
+    if not wait:
         return code, tail
 
     wait_code, wait_tail = run_logged(
@@ -405,6 +463,7 @@ def run_steam(
         env=env,
         log_file=bottle.logs / "03_run_steam.log",
     )
+    release_shared_steam_client(prefix=str(bottle.prefix))
     combined_tail = "\n".join(part for part in (tail, wait_tail) if part)
     return wait_code, combined_tail
 
