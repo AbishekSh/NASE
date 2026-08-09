@@ -952,7 +952,7 @@ enum BackendBridge {
                     return finalResponse
                 default:
                     throw NSError(
-                        domain: "SteamWineApp.BackendBridge",
+                        domain: "NASE.BackendBridge",
                         code: Int(process.terminationStatus),
                         userInfo: [NSLocalizedDescriptionKey: finalResponse.output]
                     )
@@ -965,7 +965,7 @@ enum BackendBridge {
         if process.terminationStatus != 0 {
             let message = plainText.isEmpty ? "Command failed." : plainText
             throw NSError(
-                domain: "SteamWineApp.BackendBridge",
+                domain: "NASE.BackendBridge",
                 code: Int(process.terminationStatus),
                 userInfo: [NSLocalizedDescriptionKey: message]
             )

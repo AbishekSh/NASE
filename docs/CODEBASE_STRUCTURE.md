@@ -8,7 +8,7 @@ Product-facing layout and interaction rules are documented separately in [`FRONT
 
 SteamWineWrapper is currently split into two layers:
 
-- `Sources/SteamWineApp/`: the native SwiftUI macOS product.
+- `Sources/NASE/`: the native SwiftUI macOS product.
 - `nase/` plus `nase.py`: the Python backend that manages Wine, bottles, Steam, graphics layers, scanning, and diagnostics.
 
 The SwiftUI app is the user-facing product. The Python backend is the implementation engine. The app/backend contract is moving toward structured JSON/JSONL so the UI can react to real state instead of parsing human terminal output.
@@ -50,7 +50,7 @@ Lower layers do not import or manipulate SwiftUI state. Provider adapters do not
 - `README.md`: user-facing setup and command overview.
 - `AGENTS.md`: project intent, architecture direction, and operating constraints for AI-assisted development.
 - `assets/`: source app icons and logo assets.
-- `Sources/SteamWineApp/Resources/`: app-bundled image resources.
+- `Sources/NASE/Resources/`: app-bundled image resources.
 - `nase.py`: thin Python entrypoint that calls `nase.cli.main()`.
 
 ## SwiftUI App
@@ -59,7 +59,7 @@ The SwiftUI layer owns library UX, app state, settings, sheets, and backend comm
 
 ### Entry And Shell
 
-- `SteamWineApp.swift`: app entrypoint.
+- `NASE.swift`: app entrypoint.
 - `ContentView.swift`: main window layout, sidebar, toolbar, library surface, and high-level sheet presentation.
 - `SharedViews.swift`: small reusable SwiftUI pieces.
 - `LibraryComponents.swift`: reusable library grid/list/detail components.

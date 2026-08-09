@@ -2,11 +2,11 @@ import SwiftUI
 import AppKit
 
 @main
-struct SteamWineApp: App {
+struct NASEApp: App {
     @State private var model = AppViewModel()
 
     var body: some Scene {
-        WindowGroup("SteamWineWrapper") {
+        WindowGroup("NASE") {
             ContentView(model: model)
                 .frame(minWidth: 1180, minHeight: 760)
                 .task {

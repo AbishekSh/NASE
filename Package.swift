@@ -2,25 +2,25 @@
 import PackageDescription
 
 let package = Package(
-    name: "SteamWineApp",
+    name: "NASE",
     platforms: [
         .macOS(.v14),
     ],
     products: [
-        .executable(name: "SteamWineApp", targets: ["SteamWineApp"]),
+        .executable(name: "NASE", targets: ["NASE"]),
     ],
     targets: [
         .executableTarget(
-            name: "SteamWineApp",
-            path: "Sources/SteamWineApp",
+            name: "NASE",
+            path: "Sources/NASE",
             resources: [
                 .process("Resources"),
             ]
         ),
         .testTarget(
-            name: "SteamWineAppTests",
-            dependencies: ["SteamWineApp"],
-            path: "Tests/SteamWineAppTests"
+            name: "NASETests",
+            dependencies: ["NASE"],
+            path: "Tests/NASETests"
         ),
     ]
 )

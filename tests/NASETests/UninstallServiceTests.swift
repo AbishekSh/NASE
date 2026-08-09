@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import SteamWineApp
+@testable import NASE
 
 @Test func uninstallPlanOnlyTargetsNASEOwnedLibraryLocations() throws {
     let temporary = FileManager.default.temporaryDirectory
@@ -80,7 +80,7 @@ import Testing
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
     let plan = NASEUninstallPlan.make(
         homeURL: temporary,
-        applicationURL: temporary.appendingPathComponent("SteamWineApp")
+        applicationURL: temporary.appendingPathComponent("NASE")
     )
     try FileManager.default.createDirectory(
         at: plan.managedDataURL,

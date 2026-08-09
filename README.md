@@ -168,7 +168,7 @@ or:
 xed .
 ```
 
-Run the `SteamWineApp` target in Xcode. To verify a command-line build:
+Run the `NASE` target in Xcode. To verify a command-line build:
 
 ```bash
 swift build
@@ -185,7 +185,7 @@ engine for Wine setup, store adapters, diagnostics, scanning, and launch
 workflows.
 
 ```text
-Sources/SteamWineApp/   Native SwiftUI app, state, views, and backend bridge
+Sources/NASE/   Native SwiftUI app, state, views, and backend bridge
 nase/            Python implementation engine
 nase.py          Secondary developer and debugging CLI
 docs/                   Architecture, design, and release documentation

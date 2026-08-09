@@ -997,14 +997,14 @@ final class AppViewModel {
                 let unsupported = missing.intersection(["macOS", "Python"])
                 if !unsupported.isEmpty {
                     throw NSError(
-                        domain: "SteamWineApp.DependencyBootstrap",
+                        domain: "NASE.DependencyBootstrap",
                         code: 1,
                         userInfo: [NSLocalizedDescriptionKey: "Update \(unsupported.sorted().joined(separator: " and ")) before continuing."]
                     )
                 }
                 if missing.contains("Rosetta 2") && !confirmRosettaLicense {
                     throw NSError(
-                        domain: "SteamWineApp.DependencyBootstrap",
+                        domain: "NASE.DependencyBootstrap",
                         code: 2,
                         userInfo: [NSLocalizedDescriptionKey: "Rosetta installation requires explicit acceptance of Apple's software license."]
                     )
@@ -1055,7 +1055,7 @@ final class AppViewModel {
                 let winePath = managedWinePath ?? detectedWinePath
                 guard let winePath else {
                     throw NSError(
-                        domain: "SteamWineApp.DependencyBootstrap",
+                        domain: "NASE.DependencyBootstrap",
                         code: 3,
                         userInfo: [NSLocalizedDescriptionKey: "Wine Stable was not found after installation. Choose an existing Wine Stable app in Settings."]
                     )
@@ -1098,7 +1098,7 @@ final class AppViewModel {
                 let remaining = verified.structured?.checks.filter { $0.required && $0.status == "fail" } ?? []
                 guard remaining.isEmpty else {
                     throw NSError(
-                        domain: "SteamWineApp.DependencyBootstrap",
+                        domain: "NASE.DependencyBootstrap",
                         code: 4,
                         userInfo: [NSLocalizedDescriptionKey: "Still missing: \(remaining.map(\.name).joined(separator: ", "))."]
                     )
@@ -1256,7 +1256,7 @@ final class AppViewModel {
             let targetURL = uniqueManagedRuntimeDestination(for: sourceURL)
             try FileManager.default.copyItem(at: sourceURL, to: targetURL)
             guard let executablePath = detectWineExecutable(in: targetURL) else {
-                throw NSError(domain: "SteamWineApp.WineRuntime", code: 2, userInfo: [NSLocalizedDescriptionKey: "Could not locate a Wine executable inside \(targetURL.lastPathComponent)."])
+                throw NSError(domain: "NASE.WineRuntime", code: 2, userInfo: [NSLocalizedDescriptionKey: "Could not locate a Wine executable inside \(targetURL.lastPathComponent)."])
             }
 
             let runtime = WineRuntimeRecord(

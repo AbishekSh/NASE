@@ -1,5 +1,5 @@
 import XCTest
-@testable import SteamWineApp
+@testable import NASE
 
 final class BackendBridgeTests: XCTestCase {
     private let context = BackendContext(
