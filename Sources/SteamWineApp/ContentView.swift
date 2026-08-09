@@ -123,129 +123,7 @@ struct ContentView: View {
     }
 
     private var library: some View {
-        VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 14) {
-                ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .center, spacing: 12) {
-                        libraryTitleBlock
-                        Spacer(minLength: 12)
-                        primaryActionControls
-                    }
-
-                    VStack(alignment: .leading, spacing: 10) {
-                        libraryTitleBlock
-                        primaryActionControls
-                    }
-                }
-
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        HStack(spacing: 8) {
-                            Image(systemName: "magnifyingglass")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(theme.textSecondary)
-
-                            TextField("Search library...", text: $model.searchText)
-                                .textFieldStyle(.plain)
-                                .font(.system(size: 13))
-
-                            if !model.searchText.isEmpty {
-                                Button {
-                                    model.searchText = ""
-                                } label: {
-                                    Image(systemName: "xmark.circle.fill")
-                                        .font(.system(size: 13))
-                                        .foregroundStyle(theme.textMuted)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .padding(.horizontal, 12)
-                        .frame(minWidth: 200, idealWidth: 280, maxWidth: 340)
-                        .frame(height: 34)
-                        .background(theme.controlBackground)
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .stroke(theme.controlBorder, lineWidth: 1)
-                        )
-
-                        Menu {
-                            ForEach(LibrarySortOption.allCases) { option in
-                                Button(option.rawValue) {
-                                    model.sortOption = option
-                                }
-                            }
-                        } label: {
-                            toolbarControlLabel(
-                                title: "Sort",
-                                value: model.sortOption.rawValue,
-                                systemImage: "arrow.up.arrow.down"
-                            )
-                        }
-                        .menuStyle(.borderlessButton)
-                        .fixedSize()
-
-                        Menu {
-                            Button("All Collections") {
-                                model.collectionFilter = nil
-                            }
-                            ForEach(GameCollection.allCases.filter { $0 != .none }) { collection in
-                                Button(collection.rawValue) {
-                                    model.collectionFilter = collection
-                                }
-                            }
-                        } label: {
-                            toolbarControlLabel(
-                                title: nil,
-                                value: model.collectionFilter?.rawValue ?? "Collections",
-                                systemImage: "line.3.horizontal.decrease.circle"
-                            )
-                        }
-                        .menuStyle(.borderlessButton)
-                        .fixedSize()
-
-                        if model.selectedRunner == .home {
-                            Menu {
-                                ForEach(LibrarySourceFilter.allCases) { option in
-                                    Button(option.rawValue) {
-                                        model.sourceFilter = option
-                                    }
-                                }
-                            } label: {
-                                toolbarControlLabel(
-                                    title: nil,
-                                    value: model.sourceFilter.rawValue,
-                                    systemImage: "square.grid.2x2"
-                                )
-                            }
-                            .menuStyle(.borderlessButton)
-                            .fixedSize()
-                        }
-
-                        Picker("Library layout", selection: $libraryDisplayMode) {
-                            Label("Grid", systemImage: "square.grid.2x2")
-                                .labelStyle(.iconOnly)
-                                .tag(LibraryDisplayMode.grid)
-                            Label("List", systemImage: "list.bullet")
-                                .labelStyle(.iconOnly)
-                                .tag(LibraryDisplayMode.list)
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .frame(width: 76)
-                        .help(libraryDisplayMode == .grid ? "Switch to list view" : "Switch to grid view")
-
-                        Spacer(minLength: 0)
-                    }
-                }
-                .scrollClipDisabled()
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 14)
-            .background(theme.toolbarBackground)
-
-            GeometryReader { geometry in
+        GeometryReader { geometry in
                 ScrollView {
                     if model.filteredGames.isEmpty {
                         EmptyLibraryState(
@@ -292,10 +170,95 @@ struct ContentView: View {
                 .background(theme.appBackground)
             }
             .background(theme.appBackground)
-        }
         .navigationTitle(model.selectedRunner?.rawValue ?? "Library")
+        .navigationSubtitle(librarySubtitle)
+        .searchable(text: $model.searchText, placement: .toolbar, prompt: "Search library…")
+        .toolbar { libraryToolbar }
         .task {
             model.initialLoad()
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var libraryToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            Menu {
+                ForEach(LibrarySortOption.allCases) { option in
+                    Button(option.rawValue) { model.sortOption = option }
+                }
+            } label: {
+                Label("Sort", systemImage: "arrow.up.arrow.down")
+            }
+            .help("Sort library")
+
+            Menu {
+                Button("All Collections") { model.collectionFilter = nil }
+                ForEach(GameCollection.allCases.filter { $0 != .none }) { collection in
+                    Button(collection.rawValue) { model.collectionFilter = collection }
+                }
+            } label: {
+                Label(model.collectionFilter?.rawValue ?? "Collections", systemImage: "line.3.horizontal.decrease.circle")
+            }
+            .help("Filter by collection")
+
+            if model.selectedRunner == .home {
+                Menu {
+                    ForEach(LibrarySourceFilter.allCases) { option in
+                        Button(option.rawValue) { model.sourceFilter = option }
+                    }
+                } label: {
+                    Label(model.sourceFilter.rawValue, systemImage: "square.grid.2x2")
+                }
+                .help("Filter by source")
+            }
+
+            Picker("Library layout", selection: $libraryDisplayMode) {
+                Image(systemName: "square.grid.2x2").tag(LibraryDisplayMode.grid)
+                Image(systemName: "list.bullet").tag(LibraryDisplayMode.list)
+            }
+            .pickerStyle(.segmented)
+            .help(libraryDisplayMode == .grid ? "Switch to list view" : "Switch to grid view")
+
+            if model.selectedRunner == .steam {
+                Button {
+                    model.perform(OperationCard(kind: .openSteam, title: "Open Steam", detail: "Open Windows Steam.", symbolName: "play.circle"))
+                } label: {
+                    Label("Open Steam", systemImage: "play.circle")
+                }
+            }
+            if model.shouldShowAddButton {
+                if model.shouldShowWineAddMenu {
+                    Menu {
+                        Button("Add Windows Game") { model.performPrimaryAddAction() }
+                        Button("Open Installer") { model.openWineInstaller() }
+                    } label: {
+                        Label("Add", systemImage: "plus")
+                    }
+                } else {
+                    Button { model.performPrimaryAddAction() } label: {
+                        Label(model.selectedRunnerActionTitle, systemImage: "plus")
+                    }
+                }
+            }
+            if model.selectedRunner == .epic {
+                Button { model.openEpicSetup() } label: {
+                    Label("Epic Setup", systemImage: "person.badge.key")
+                }
+            }
+            if model.selectedRunner == .gog {
+                Button { model.openGOGSetup() } label: {
+                    Label("GOG Setup", systemImage: "person.badge.key")
+                }
+            }
+            if let runner = model.selectedRunner, [.steam, .epic, .gog].contains(runner) {
+                Button { refreshSelectedSource() } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .help("Refresh the selected library")
+            }
+            Button { model.openSettings() } label: {
+                Label("Settings", systemImage: "slider.horizontal.3")
+            }
         }
     }
 
@@ -324,18 +287,6 @@ struct ContentView: View {
         model.gameCount(for: runner)
     }
 
-    private var libraryTitleBlock: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(model.selectedRunner?.rawValue ?? "Library")
-                .font(.system(size: 22, weight: .bold, design: .rounded))
-                .foregroundStyle(theme.textPrimary)
-            Text(librarySubtitle)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(theme.textSecondary)
-                .lineLimit(1)
-        }
-    }
-
     private var librarySubtitle: String {
         let count = model.filteredGames.count
         let noun = count == 1 ? "game" : "games"
@@ -343,61 +294,6 @@ struct ContentView: View {
         return "\(count) \(noun)  •  \(description)"
     }
 
-    private var primaryActionControls: some View {
-        HStack(spacing: 10) {
-            if model.selectedRunner == .steam {
-                Button { model.perform(OperationCard(kind: .openSteam, title: "Open Steam", detail: "Open Windows Steam.", symbolName: "play.circle")) } label: {
-                    toolbarButtonLabel("Open Steam", systemImage: "play.circle")
-                }
-                .buttonStyle(.plain)
-            }
-            if model.shouldShowAddButton {
-                if model.shouldShowWineAddMenu {
-                    Menu {
-                        Button("Add Windows Game") { model.performPrimaryAddAction() }
-                        Button("Open Installer") { model.openWineInstaller() }
-                    } label: {
-                        toolbarButtonLabel("Add", systemImage: "plus")
-                    }
-                    .menuStyle(.borderlessButton)
-                } else {
-                    Button { model.performPrimaryAddAction() } label: {
-                        toolbarButtonLabel(model.selectedRunnerActionTitle, systemImage: "plus")
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            if model.selectedRunner == .epic {
-                Button {
-                    model.openEpicSetup()
-                } label: {
-                    toolbarButtonLabel("Epic Setup", systemImage: "person.badge.key")
-                }
-                .buttonStyle(.plain)
-            }
-            if model.selectedRunner == .gog {
-                Button {
-                    model.openGOGSetup()
-                } label: {
-                    toolbarButtonLabel("GOG Setup", systemImage: "person.badge.key")
-                }
-                .buttonStyle(.plain)
-            }
-            if let runner = model.selectedRunner, [.steam, .epic, .gog].contains(runner) {
-                Button { refreshSelectedSource() } label: {
-                    toolbarButtonLabel("Refresh", systemImage: "arrow.clockwise")
-                }
-                .buttonStyle(.plain)
-                .help("Refresh the selected library")
-            }
-            Button {
-                model.openSettings()
-            } label: {
-                toolbarButtonLabel("Settings", systemImage: "slider.horizontal.3")
-            }
-            .buttonStyle(.plain)
-        }
-    }
 
     private var sidebarCommandCenter: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -533,52 +429,4 @@ struct ContentView: View {
         )
     }
 
-    @ViewBuilder
-    private func toolbarButtonLabel(_ title: String, systemImage: String) -> some View {
-        Label(title, systemImage: systemImage)
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(theme.textPrimary)
-            .lineLimit(1)
-            .minimumScaleFactor(0.9)
-            .padding(.horizontal, 12)
-            .frame(height: 34)
-            .background(theme.controlBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(theme.controlBorder, lineWidth: 1)
-            )
-    }
-
-    @ViewBuilder
-    private func toolbarControlLabel(title: String?, value: String, systemImage: String) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: systemImage)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(theme.textSecondary)
-            if let title {
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(theme.textPrimary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.9)
-            }
-            Text(value)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(theme.textPrimary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.9)
-            Image(systemName: "chevron.down")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(theme.textMuted)
-        }
-        .padding(.horizontal, 12)
-        .frame(height: 34)
-        .background(theme.controlBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(theme.controlBorder, lineWidth: 1)
-        )
-    }
 }
