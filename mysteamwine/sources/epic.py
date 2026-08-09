@@ -278,38 +278,44 @@ def _safe_art_url(value: Any) -> str | None:
     return candidate
 
 
-def _epic_art_url(item: dict[str, Any], metadata: dict[str, Any]) -> str | None:
-    """Choose the best card artwork exposed by Epic/Legendary metadata."""
-    direct = _safe_art_url(
-        _value(item, "art_url", "artUrl") or _value(metadata, "art_url", "artUrl")
-    )
-    if direct:
-        return direct
+_EPIC_LANDSCAPE_TYPE_SCORES = {
+    "dieselstorefrontwide": 700,
+    "offerimagewide": 650,
+    "dieselgamebox": 600,
+    "featured": 550,
+    "hero": 500,
+    "vaultclosed": 450,
+    "comingsoon": 400,
+    "thumbnail": 250,
+    "dieselgameboxtall": 100,
+    "offerimagetall": 100,
+}
 
+_EPIC_PORTRAIT_TYPE_SCORES = {
+    "dieselgameboxtall": 700,
+    "offerimagetall": 650,
+    "dieselgamebox": 300,
+    "thumbnail": 250,
+    "featured": 200,
+    "hero": 150,
+    "dieselstorefrontwide": 50,
+    "offerimagewide": 50,
+}
+
+
+def _epic_art_candidates(item: dict[str, Any], metadata: dict[str, Any]) -> list[dict[str, Any]]:
     raw_images = (
         _value(metadata, "keyImages", "key_images")
         or _value(item, "keyImages", "key_images")
         or []
     )
-    if not isinstance(raw_images, list):
-        return None
+    return [image for image in raw_images if isinstance(image, dict)] if isinstance(raw_images, list) else []
 
-    preferred_types = {
-        "dieselstorefrontwide": 700,
-        "offerimagewide": 650,
-        "dieselgamebox": 600,
-        "featured": 550,
-        "hero": 500,
-        "vaultclosed": 450,
-        "comingsoon": 400,
-        "thumbnail": 250,
-        "dieselgameboxtall": 100,
-        "offerimagetall": 100,
-    }
-    candidates: list[tuple[float, str]] = []
-    for image in raw_images:
-        if not isinstance(image, dict):
-            continue
+
+def _epic_select_art(candidates: list[dict[str, Any]], *, prefer_tall: bool) -> str | None:
+    type_scores = _EPIC_PORTRAIT_TYPE_SCORES if prefer_tall else _EPIC_LANDSCAPE_TYPE_SCORES
+    scored: list[tuple[float, str]] = []
+    for image in candidates:
         url = _safe_art_url(_value(image, "url", "imageUrl", "image_url"))
         if not url:
             continue
@@ -320,11 +326,30 @@ def _epic_art_url(item: dict[str, Any], metadata: dict[str, Any]) -> str | None:
             width = height = 0
         image_type = str(_value(image, "type") or "").replace("_", "").casefold()
         aspect = width / height if height else 0
-        # Wide artwork fits NASE's landscape cards; resolution breaks ties.
-        shape_score = 300 if aspect >= 1.45 else (100 if aspect >= 1 else 0)
+        if prefer_tall:
+            # Portrait cards want taller-than-wide art; resolution breaks ties.
+            shape_score = 300 if (0 < aspect < 0.9) else (100 if aspect < 1 else 0)
+        else:
+            # Wide artwork fits NASE's landscape fallback cards.
+            shape_score = 300 if aspect >= 1.45 else (100 if aspect >= 1 else 0)
         size_score = min((width * height) / 1_000_000, 20)
-        candidates.append((preferred_types.get(image_type, 200) + shape_score + size_score, url))
-    return max(candidates, default=(0, None), key=lambda candidate: candidate[0])[1]
+        scored.append((type_scores.get(image_type, 200) + shape_score + size_score, url))
+    return max(scored, default=(0, None), key=lambda candidate: candidate[0])[1]
+
+
+def _epic_art_url(item: dict[str, Any], metadata: dict[str, Any]) -> str | None:
+    """Choose the best landscape card artwork exposed by Epic/Legendary metadata."""
+    direct = _safe_art_url(
+        _value(item, "art_url", "artUrl") or _value(metadata, "art_url", "artUrl")
+    )
+    if direct:
+        return direct
+    return _epic_select_art(_epic_art_candidates(item, metadata), prefer_tall=False)
+
+
+def _epic_portrait_art_url(item: dict[str, Any], metadata: dict[str, Any]) -> str | None:
+    """Choose the best portrait/vertical cover exposed by Epic/Legendary metadata."""
+    return _epic_select_art(_epic_art_candidates(item, metadata), prefer_tall=True)
 
 
 def normalize_epic_games(owned_payload: Any, installed_payload: Any) -> list[SourceGame]:
@@ -346,6 +371,7 @@ def normalize_epic_games(owned_payload: Any, installed_payload: Any) -> list[Sou
             install_path = _value(local, "install_path", "installPath", "path")
         metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
         art_url = _epic_art_url(item, metadata)
+        portrait_art_url = _epic_portrait_art_url(item, metadata)
         games.append(
             SourceGame(
                 source="epic",
@@ -357,6 +383,7 @@ def normalize_epic_games(owned_payload: Any, installed_payload: Any) -> list[Sou
                 version=str(_value(local or {}, "version", "app_version") or "") or None,
                 update_available=bool(_value(local or {}, "update_available", "updateAvailable") or False),
                 art_url=art_url,
+                portrait_art_url=portrait_art_url,
             )
         )
     return sorted(games, key=lambda game: (game.title.casefold(), game.store_id))

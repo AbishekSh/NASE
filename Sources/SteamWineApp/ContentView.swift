@@ -7,6 +7,8 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var draggedGame: LibraryGame?
     @AppStorage("libraryDisplayMode") private var libraryDisplayMode: LibraryDisplayMode = .grid
+    @FocusState private var focusedGameID: String?
+    @State private var gridColumnCount: Int = 1
 
     private var theme: ThemePalette { ThemePalette(scheme: colorScheme) }
 
@@ -261,24 +263,25 @@ struct ContentView: View {
                         )
                         .padding(24)
                     } else if libraryDisplayMode == .grid {
+                        let columns = gridColumns(for: geometry.size.width)
                         LazyVGrid(
-                            columns: gridColumns(for: geometry.size.width),
+                            columns: columns,
                             alignment: .leading,
                             spacing: libraryGridSpacing
                         ) {
-                            ForEach(model.filteredGames) { game in
-                                GeometryReader { cell in
-                                    gameCard(for: game)
-                                        .frame(width: cell.size.width)
-                                }
-                                .frame(height: libraryCardHeight)
+                            ForEach(model.filteredGames, id: \.pinID) { game in
+                                gameCard(for: game)
                             }
                         }
                         .padding(.horizontal, libraryGridPadding)
                         .padding(.vertical, libraryGridSpacing)
+                        .onAppear { gridColumnCount = columns.count }
+                        .onChange(of: geometry.size.width) { _, width in
+                            gridColumnCount = gridColumns(for: width).count
+                        }
                     } else {
                         LazyVStack(spacing: 12) {
-                            ForEach(model.filteredGames) { game in
+                            ForEach(model.filteredGames, id: \.pinID) { game in
                                 gameCard(for: game)
                             }
                         }
@@ -296,13 +299,12 @@ struct ContentView: View {
         }
     }
 
-    private let libraryGridSpacing: CGFloat = 20
+    private let libraryGridSpacing: CGFloat = 18
     private let libraryGridPadding: CGFloat = 20
-    private let libraryCardHeight: CGFloat = 214
 
     private func gridColumns(for availableWidth: CGFloat) -> [GridItem] {
-        let preferredCardWidth: CGFloat = 360
-        let usableWidth = max(260, availableWidth - (libraryGridPadding * 2))
+        let preferredCardWidth: CGFloat = 185
+        let usableWidth = max(160, availableWidth - (libraryGridPadding * 2))
         let columnCount = max(
             1,
             Int((usableWidth + libraryGridSpacing) / (preferredCardWidth + libraryGridSpacing))
@@ -310,7 +312,7 @@ struct ContentView: View {
 
         return Array(
             repeating: GridItem(
-                .flexible(minimum: 260, maximum: 440),
+                .flexible(minimum: 150, maximum: 240),
                 spacing: libraryGridSpacing,
                 alignment: .top
             ),
@@ -456,15 +458,48 @@ struct ContentView: View {
 
     @ViewBuilder
     private func gameCard(for game: LibraryGame) -> some View {
-        if model.selectedRunner == .home {
-            configuredGameCard(for: game)
-                .onDrop(
-                    of: [UTType.text],
-                    delegate: GameDropDelegate(targetGame: game, draggedGame: $draggedGame, model: model)
-                )
-        } else {
-            configuredGameCard(for: game)
+        Group {
+            if model.selectedRunner == .home {
+                configuredGameCard(for: game)
+                    .onDrop(
+                        of: [UTType.text],
+                        delegate: GameDropDelegate(targetGame: game, draggedGame: $draggedGame, model: model)
+                    )
+            } else {
+                configuredGameCard(for: game)
+            }
         }
+        .focusable()
+        .focused($focusedGameID, equals: game.pinID)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(theme.accentPrimary, lineWidth: focusedGameID == game.pinID ? 2.5 : 0)
+        )
+        .onKeyPress(.return) {
+            model.canStop(game) ? model.stop(game) : model.launch(game)
+            return .handled
+        }
+        .onMoveCommand { direction in
+            moveFocus(direction, from: game)
+        }
+    }
+
+    /// Arrow-key navigation across the library. Left/right step one card;
+    /// up/down jump by a full row using the current column count.
+    private func moveFocus(_ direction: MoveCommandDirection, from game: LibraryGame) {
+        let games = model.filteredGames
+        guard let index = games.firstIndex(where: { $0.pinID == game.pinID }) else { return }
+        let stride = libraryDisplayMode == .grid ? gridColumnCount : 1
+        let target: Int
+        switch direction {
+        case .left: target = index - 1
+        case .right: target = index + 1
+        case .up: target = index - stride
+        case .down: target = index + stride
+        @unknown default: return
+        }
+        guard games.indices.contains(target) else { return }
+        focusedGameID = games[target].pinID
     }
 
     private func configuredGameCard(for game: LibraryGame) -> some View {

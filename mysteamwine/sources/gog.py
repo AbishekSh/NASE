@@ -199,7 +199,8 @@ class GOGSource:
             local = installed.get(game_id)
             normalized = SourceGame("gog", game_id, f"gog:{game_id}", title, local is not None,
                                     local.get("install_path") if local else None,
-                                    local.get("version") if local else None, False, _art_url(game))
+                                    local.get("version") if local else None, False, _art_url(game),
+                                    portrait_art_url=_portrait_art_url(game))
             canonical_id = str(metadata.get("game_id") or game.get("id") or game_id)
             existing = games_by_canonical_id.get(canonical_id)
             if existing is None or (normalized.installed and not existing.installed) or (normalized.art_url and not existing.art_url):
@@ -296,10 +297,18 @@ def _localized(value: Any) -> str | None:
     return None
 
 
-def _art_url(game: dict[str, Any]) -> str | None:
-    for key in ("background", "vertical_cover", "logo", "square_icon", "icon"):
+def _art_from_keys(game: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
         image = game.get(key)
         template = image.get("url_format") if isinstance(image, dict) else None
         if isinstance(template, str) and template.startswith("https://"):
             return template.replace("{formatter}", "").replace("{ext}", "jpg")
     return None
+
+
+def _art_url(game: dict[str, Any]) -> str | None:
+    return _art_from_keys(game, ("background", "vertical_cover", "logo", "square_icon", "icon"))
+
+
+def _portrait_art_url(game: dict[str, Any]) -> str | None:
+    return _art_from_keys(game, ("vertical_cover", "logo", "square_icon", "icon"))

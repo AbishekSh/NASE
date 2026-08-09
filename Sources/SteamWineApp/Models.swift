@@ -446,6 +446,7 @@ struct LibraryGame: Identifiable, Hashable {
     let status: String
     let statsText: String?
     let bannerURL: URL?
+    let portraitURL: URL?
     let installURL: URL?
     let launchURL: URL?
     let storeURL: URL?
@@ -460,6 +461,7 @@ struct LibraryGame: Identifiable, Hashable {
         status: String,
         statsText: String? = nil,
         bannerURL: URL? = nil,
+        portraitURL: URL? = nil,
         installURL: URL? = nil,
         launchURL: URL? = nil,
         storeURL: URL? = nil
@@ -473,6 +475,7 @@ struct LibraryGame: Identifiable, Hashable {
         self.status = status
         self.statsText = statsText
         self.bannerURL = bannerURL
+        self.portraitURL = portraitURL
         self.installURL = installURL
         self.launchURL = launchURL
         self.storeURL = storeURL

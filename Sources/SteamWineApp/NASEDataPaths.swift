@@ -20,6 +20,13 @@ enum NASEDataPaths {
             .appendingPathComponent(legacyDirectoryName, isDirectory: true)
     }
 
+    /// On-disk cache for downsampled cover art, persisted across launches.
+    static func artworkCacheURL(
+        homeURL: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> URL {
+        rootURL(homeURL: homeURL).appendingPathComponent("artwork-cache", isDirectory: true)
+    }
+
     @discardableResult
     static func migrateLegacyDataIfNeeded(
         homeURL: URL = FileManager.default.homeDirectoryForCurrentUser,
