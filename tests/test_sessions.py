@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from mysteamwine.bottle import Bottle
-import mysteamwine.sessions as sessions
+from nase.bottle import Bottle
+import nase.sessions as sessions
 
 
 class LaunchSessionTests(unittest.TestCase):

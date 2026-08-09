@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import mysteamwine.dependencies as dependencies
+import nase.dependencies as dependencies
 
 
 class DependencyStatusTests(unittest.TestCase):

@@ -2357,8 +2357,8 @@ final class AppViewModel {
         let cleanedPrefix = (externalPrefix ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
 
         var results: [String] = []
-        let backendScript = backendContext.repoRoot.appendingPathComponent("mysteamwine.py").path
-        results.append(fileManager.fileExists(atPath: backendScript) ? "OK: mysteamwine.py found" : "FAIL: mysteamwine.py not found at repo root")
+        let backendScript = backendContext.repoRoot.appendingPathComponent("nase.py").path
+        results.append(fileManager.fileExists(atPath: backendScript) ? "OK: nase.py found" : "FAIL: nase.py not found at repo root")
         results.append(validateWinePath(cleanedWine))
         results.append(detectedWinetricksStatus())
         results.append(contentsOf: validateDXMTSource(cleanedDXMT))

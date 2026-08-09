@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from mysteamwine.sources.gog import GOGSource, _authorization_code
+from nase.sources.gog import GOGSource, _authorization_code
 
 
 class GOGSourceTests(unittest.TestCase):
@@ -25,7 +25,7 @@ class GOGSourceTests(unittest.TestCase):
             client = root / "gogdl"
             client.write_text("", encoding="utf-8")
             client.chmod(0o755)
-            with patch("mysteamwine.sources.gog.app_support_root", return_value=root / "support"):
+            with patch("nase.sources.gog.app_support_root", return_value=root / "support"):
                 source = GOGSource(str(client))
                 source.root.mkdir(parents=True)
                 source.auth_path.write_text("", encoding="utf-8")
@@ -46,7 +46,7 @@ class GOGSourceTests(unittest.TestCase):
                 payload = {"access_token": "secret", "user_id": "42"}
                 return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
 
-            with patch("mysteamwine.sources.gog.app_support_root", return_value=root / "support"):
+            with patch("nase.sources.gog.app_support_root", return_value=root / "support"):
                 source = GOGSource(str(client), runner=runner)
                 status = source.authenticate(authorization_code="fresh-code")
                 self.assertTrue(status.authenticated)
@@ -77,7 +77,7 @@ class GOGSourceTests(unittest.TestCase):
                     },
                 }
 
-            with patch("mysteamwine.sources.gog.app_support_root", return_value=root / "support"):
+            with patch("nase.sources.gog.app_support_root", return_value=root / "support"):
                 source = GOGSource(str(client), runner=runner, fetch_json=fetch)
                 source.root.mkdir(parents=True)
                 source.auth_path.write_text("{}", encoding="utf-8")
@@ -113,7 +113,7 @@ class GOGSourceTests(unittest.TestCase):
                 return {"type": "game", "game_id": "canonical-game", "title": {"*": "Game"},
                         "game": {"visible_in_library": True}}
 
-            with patch("mysteamwine.sources.gog.app_support_root", return_value=root / "support"):
+            with patch("nase.sources.gog.app_support_root", return_value=root / "support"):
                 source = GOGSource(str(client), runner=runner, fetch_json=fetch)
                 source.root.mkdir(parents=True)
                 source.auth_path.write_text("{}", encoding="utf-8")
@@ -138,7 +138,7 @@ class GOGSourceTests(unittest.TestCase):
             def launcher(command, environment, log_path):
                 launches.append(command)
 
-            with patch("mysteamwine.sources.gog.app_support_root", return_value=root / "support"):
+            with patch("nase.sources.gog.app_support_root", return_value=root / "support"):
                 source = GOGSource(str(client), runner=runner, launcher=launcher)
                 source.install("123", base_path=root / "games")
                 (root / "games" / "Game").mkdir(parents=True, exist_ok=True)

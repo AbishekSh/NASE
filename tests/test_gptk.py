@@ -6,10 +6,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from mysteamwine.bottle import Bottle
-from mysteamwine.d3dmetal import d3dmetal_launch_environment, enable_d3dmetal_overrides, verify_d3dmetal_profile
-import mysteamwine.gptk as gptk
-from mysteamwine.gptk import inspect_gptk_installation
+from nase.bottle import Bottle
+from nase.d3dmetal import d3dmetal_launch_environment, enable_d3dmetal_overrides, verify_d3dmetal_profile
+import nase.gptk as gptk
+from nase.gptk import inspect_gptk_installation
 
 
 class GPTKTests(unittest.TestCase):

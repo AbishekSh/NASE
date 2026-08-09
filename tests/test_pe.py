@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mysteamwine.pe import PE_MACHINE_AMD64, PE_MACHINE_I386, executable_architecture, pe_machine
+from nase.pe import PE_MACHINE_AMD64, PE_MACHINE_I386, executable_architecture, pe_machine
 
 
 class PEArchitectureTests(unittest.TestCase):

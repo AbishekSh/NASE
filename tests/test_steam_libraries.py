@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from mysteamwine.bottle import Bottle
-import mysteamwine.steam_libraries as steam_libraries
+from nase.bottle import Bottle
+import nase.steam_libraries as steam_libraries
 
 
 def write_manifest(steamapps: Path, appid: str, name: str, install_dir: str) -> Path:

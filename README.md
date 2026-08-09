@@ -186,8 +186,8 @@ workflows.
 
 ```text
 Sources/SteamWineApp/   Native SwiftUI app, state, views, and backend bridge
-mysteamwine/            Python implementation engine
-mysteamwine.py          Secondary developer and debugging CLI
+nase/            Python implementation engine
+nase.py          Secondary developer and debugging CLI
 docs/                   Architecture, design, and release documentation
 ```
 
@@ -209,20 +209,20 @@ outside the app and is useful for diagnostics and automation.
 
 ```bash
 # Inspect system and bottle readiness
-python3 mysteamwine.py --json doctor
+python3 nase.py --json doctor
 
 # Stream a managed setup job
-python3 mysteamwine.py --bottle Default-DXMT --jsonl \
+python3 nase.py --bottle Default-DXMT --jsonl \
   setup-compatibility-profile --profile dxmt-wine-stable-11-v1
 
 # List normalized games
-python3 mysteamwine.py --json list-games
+python3 nase.py --json list-games
 
 # Inspect durable work from this or an earlier app session
-python3 mysteamwine.py --json list-jobs
+python3 nase.py --json list-jobs
 
 # Inspect active game sessions
-python3 mysteamwine.py --json list-sessions
+python3 nase.py --json list-sessions
 ```
 
 Existing CLI commands remain supported while the native app continues moving

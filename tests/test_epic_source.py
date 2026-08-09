@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from mysteamwine.sources.epic import EpicSource, _authenticated_from_status, normalize_epic_games
+from nase.sources.epic import EpicSource, _authenticated_from_status, normalize_epic_games
 
 
 class EpicSourceTests(unittest.TestCase):
@@ -66,8 +66,8 @@ class EpicSourceTests(unittest.TestCase):
 
     def test_missing_client_has_friendly_status(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, \
-             patch("mysteamwine.sources.epic.shutil.which", return_value=None), \
-             patch("mysteamwine.sources.epic.app_support_root", return_value=Path(temporary)):
+             patch("nase.sources.epic.shutil.which", return_value=None), \
+             patch("nase.sources.epic.app_support_root", return_value=Path(temporary)):
             status = EpicSource("missing-legendary").status()
         self.assertFalse(status.available)
         self.assertFalse(status.authenticated)
@@ -127,7 +127,7 @@ class EpicSourceTests(unittest.TestCase):
             def runner(command, environment, timeout):
                 return subprocess.CompletedProcess(command, 0, "", "")
 
-            with patch("mysteamwine.sources.epic.app_support_root", return_value=root / "support"):
+            with patch("nase.sources.epic.app_support_root", return_value=root / "support"):
                 source = EpicSource(str(client), runner=runner)
                 with self.assertRaisesRegex(RuntimeError, "did not accept"):
                     source.authenticate(authorization_code="unused-code")
@@ -151,7 +151,7 @@ class EpicSourceTests(unittest.TestCase):
                     return subprocess.CompletedProcess(command, 0, '{"account_id":"123"}', "")
                 return subprocess.CompletedProcess(command, 0, "", "")
 
-            with patch("mysteamwine.sources.epic.app_support_root", return_value=root / "support"):
+            with patch("nase.sources.epic.app_support_root", return_value=root / "support"):
                 source = EpicSource(str(client), runner=runner)
                 status = source.authenticate(authorization_code='{"authorizationCode": "short-code"}')
         self.assertTrue(status.authenticated)

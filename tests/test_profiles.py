@@ -7,9 +7,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from mysteamwine.bottle import Bottle
-import mysteamwine.cli as cli
-import mysteamwine.profiles as profiles
+from nase.bottle import Bottle
+import nase.cli as cli
+import nase.profiles as profiles
 
 
 class CompatibilityProfileTests(unittest.TestCase):

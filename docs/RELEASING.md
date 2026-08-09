@@ -43,7 +43,7 @@ scripts/build-app.sh
 
 The script builds with SwiftPM in release mode, downloads and verifies the
 architecture-matched pinned Python 3.13 standalone runtime, and embeds it
-alongside `mysteamwine.py`, the Python package, and probe executables. It signs
+alongside `nase.py`, the Python package, and probe executables. It signs
 the nested Python Mach-O files before enabling the hardened runtime on the
 outer app, verifies the result, and creates `dist/NASE-VERSION.dmg`.
 

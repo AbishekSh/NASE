@@ -6,9 +6,9 @@ from unittest.mock import patch
 from pathlib import Path
 import zipfile
 
-from mysteamwine.bottle import Bottle
-from mysteamwine.legacy_directx import prepare_legacy_directx_overlay, reset_legacy_directx_overlay
-from mysteamwine.steam import run_game_executable
+from nase.bottle import Bottle
+from nase.legacy_directx import prepare_legacy_directx_overlay, reset_legacy_directx_overlay
+from nase.steam import run_game_executable
 
 
 def write_x86_pe(path: Path) -> None:
@@ -81,9 +81,9 @@ class LegacyDirectXOverlayTests(unittest.TestCase):
         wine.write_text("", encoding="utf-8")
 
         with (
-            patch("mysteamwine.steam.validate_executable_compatibility", return_value="x86"),
-            patch("mysteamwine.steam._graphics_launch_env", return_value={}),
-            patch("mysteamwine.steam.run_logged_detached", return_value=(0, "")) as run,
+            patch("nase.steam.validate_executable_compatibility", return_value="x86"),
+            patch("nase.steam._graphics_launch_env", return_value={}),
+            patch("nase.steam.run_logged_detached", return_value=(0, "")) as run,
         ):
             run_game_executable(
                 bottle=self.bottle,

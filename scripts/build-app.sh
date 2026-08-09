@@ -24,8 +24,8 @@ mkdir -p "$app_path/Contents/MacOS" "$app_path/Contents/Resources/Backend" "$app
 cp "$bin_dir/SteamWineApp" "$app_path/Contents/MacOS/SteamWineApp"
 cp release/Info.plist "$app_path/Contents/Info.plist"
 cp "assets/NASE App Logo.icns" "$app_path/Contents/Resources/NASE App Logo.icns"
-cp mysteamwine.py "$app_path/Contents/Resources/Backend/mysteamwine.py"
-cp -R mysteamwine "$app_path/Contents/Resources/Backend/mysteamwine"
+cp nase.py "$app_path/Contents/Resources/Backend/nase.py"
+cp -R nase "$app_path/Contents/Resources/Backend/nase"
 cp -R Tools "$app_path/Contents/Resources/Backend/Tools"
 python_runtime=$(scripts/prepare-python-runtime.sh)
 python_framework="$app_path/Contents/Frameworks/Python.framework"

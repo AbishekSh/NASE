@@ -5,13 +5,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from mysteamwine.jobs import cancel_job, create_job, list_jobs, load_job, update_job
+from nase.jobs import cancel_job, create_job, list_jobs, load_job, update_job
 
 
 class DurableJobTests(unittest.TestCase):
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp(prefix="nase-jobs-test-"))
-        self.support_patch = patch("mysteamwine.jobs.app_support_root", return_value=self.root)
+        self.support_patch = patch("nase.jobs.app_support_root", return_value=self.root)
         self.support_patch.start()
 
     def tearDown(self) -> None:
@@ -45,7 +45,7 @@ class DurableJobTests(unittest.TestCase):
 
     def test_abandoned_active_job_becomes_interrupted(self) -> None:
         create_job(job_id="job_dead", action="setup", message="Starting")
-        with patch("mysteamwine.jobs._pid_is_our_backend", return_value=False):
+        with patch("nase.jobs._pid_is_our_backend", return_value=False):
             jobs = list_jobs()
         self.assertEqual(jobs[0]["status"], "interrupted")
         self.assertIn("Repair", jobs[0]["message"])
@@ -53,8 +53,8 @@ class DurableJobTests(unittest.TestCase):
     def test_cancel_only_signals_verified_backend_process(self) -> None:
         create_job(job_id="job_live", action="setup", message="Starting")
         with (
-            patch("mysteamwine.jobs._pid_is_our_backend", return_value=True),
-            patch("mysteamwine.jobs.os.kill") as kill,
+            patch("nase.jobs._pid_is_our_backend", return_value=True),
+            patch("nase.jobs.os.kill") as kill,
         ):
             job = cancel_job("job_live")
         self.assertEqual(job["status"], "cancelling")

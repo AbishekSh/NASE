@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-import mysteamwine.library_activity as activity
-import mysteamwine.sessions as sessions
+import nase.library_activity as activity
+import nase.sessions as sessions
 
 
 class SteamLibraryActivityTests(unittest.TestCase):

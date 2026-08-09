@@ -1830,10 +1830,10 @@ def cmd_setup_metal(args: argparse.Namespace) -> None:
             print("Metal setup complete.")
             if _is_external_prefix(args):
                 print("Next step:")
-                print(f"python3 mysteamwine.py --prefix {bottle.prefix} --wine {wine64} run-steam")
+                print(f"python3 nase.py --prefix {bottle.prefix} --wine {wine64} run-steam")
             else:
                 print("Next step:")
-                print(f"python3 mysteamwine.py --bottle {bottle.name} --wine {wine64} run-steam")
+                print(f"python3 nase.py --bottle {bottle.name} --wine {wine64} run-steam")
         return
 
     if not _json_enabled(args):
@@ -2863,7 +2863,7 @@ def cmd_reset_game_overlay(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="mysteamwine",
+        prog="nase",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=textwrap.dedent(
             f"""\

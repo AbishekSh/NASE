@@ -9,7 +9,7 @@ Product-facing layout and interaction rules are documented separately in [`FRONT
 SteamWineWrapper is currently split into two layers:
 
 - `Sources/SteamWineApp/`: the native SwiftUI macOS product.
-- `mysteamwine/` plus `mysteamwine.py`: the Python backend that manages Wine, bottles, Steam, graphics layers, scanning, and diagnostics.
+- `nase/` plus `nase.py`: the Python backend that manages Wine, bottles, Steam, graphics layers, scanning, and diagnostics.
 
 The SwiftUI app is the user-facing product. The Python backend is the implementation engine. The app/backend contract is moving toward structured JSON/JSONL so the UI can react to real state instead of parsing human terminal output.
 
@@ -51,7 +51,7 @@ Lower layers do not import or manipulate SwiftUI state. Provider adapters do not
 - `AGENTS.md`: project intent, architecture direction, and operating constraints for AI-assisted development.
 - `assets/`: source app icons and logo assets.
 - `Sources/SteamWineApp/Resources/`: app-bundled image resources.
-- `mysteamwine.py`: thin Python entrypoint that calls `mysteamwine.cli.main()`.
+- `nase.py`: thin Python entrypoint that calls `nase.cli.main()`.
 
 ## SwiftUI App
 
@@ -100,7 +100,7 @@ Do not split it just for file size; split when it lowers coupling.
 - `BackendBridge.swift`: the Swift/Python boundary.
   - `BackendContext` stores paths and target selection.
   - `BackendAction` enumerates commands the UI can ask Python to run.
-  - `BackendBridge.arguments(...)` maps Swift actions to `mysteamwine.py` CLI arguments.
+  - `BackendBridge.arguments(...)` maps Swift actions to `nase.py` CLI arguments.
   - `executeStreaming(...)` runs Python via `/usr/bin/env`, consumes JSONL, and emits `BackendStreamUpdate` values.
 
 The bridge should remain the only place that knows the exact CLI argument shape. UI files should ask for actions, not assemble command arrays.
@@ -120,7 +120,7 @@ The backend is a CLI-first engine. It should remain usable from Terminal while a
 
 ### CLI And Contract
 
-- `mysteamwine/cli.py`: command parser and command handlers.
+- `nase/cli.py`: command parser and command handlers.
   - Global target selection: `--bottle` or `--prefix`.
   - Global runtime selection: `--wine` / related Wine path flags.
   - Structured modes: `--json` and `--jsonl`.
@@ -375,7 +375,7 @@ Recommended future Python modules if this grows:
 
 ## Development Rules Of Thumb
 
-- Keep `mysteamwine.py` terminal workflows working.
+- Keep `nase.py` terminal workflows working.
 - Prefer adding structured JSON fields over parsing new human text in Swift.
 - Keep Wine process execution in `runtime.py`.
 - Keep per-graphics file and override logic in the graphics modules.
