@@ -1349,13 +1349,6 @@ final class AppViewModel {
         return "FAIL: Winetricks was not found on this Mac"
     }
 
-    func setupWizardCanRun(winePath: String, dxmtSource: String, bottleName: String) -> Bool {
-        let cleanedBottle = bottleName.trimmingCharacters(in: .whitespacesAndNewlines)
-        return backendPreflightState == .ready
-            && !cleanedBottle.isEmpty
-            && !isDependencyBootstrapRunning
-    }
-
     func validateDXMTSourceForWizard(_ path: String) -> [String] {
         validateDXMTSource(path.trimmingCharacters(in: .whitespacesAndNewlines))
     }
@@ -1368,18 +1361,6 @@ final class AppViewModel {
         validateD3DMetalSource(path.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
-    func runSetupWizard(winePath: String, dxmtSource: String, dxvkSource: String, bottleName: String) {
-        // Recommended setup owns its runtime selections. Do not persist the
-        // wizard's clean-machine placeholder paths before the managed runtime
-        // downloader has had a chance to replace them.
-        backendContext = backendContext.overridingTarget(
-            bottleName: bottleName,
-            externalPrefix: nil
-        )
-        backendContext.persist()
-        selectedRunner = .steam
-        startRecommendedBootstrap(confirmRosettaLicense: true)
-    }
 
     func installDXVKFromWizard(winePath: String, dxmtSource: String, dxvkSource: String, bottleName: String) {
         applySettings(

@@ -183,37 +183,6 @@ enum BackendJobStatus: String, Codable, Hashable {
     case interrupted
 }
 
-enum SetupWizardStep: String, CaseIterable, Identifiable {
-    case welcome = "Welcome"
-    case wine = "Wine"
-    case winetricks = "Winetricks"
-    case graphics = "Graphics"
-    case bottle = "Bottle"
-    case steam = "Steam"
-    case finish = "Finish"
-
-    var id: String { rawValue }
-
-    var subtitle: String {
-        switch self {
-        case .welcome:
-            return "What the setup flow will do"
-        case .wine:
-            return "Detect Wine and explain install steps"
-        case .winetricks:
-            return "Detect Winetricks and explain install steps"
-        case .graphics:
-            return "Choose the DXMT payload for Metal support"
-        case .bottle:
-            return "Pick the managed bottle to create and maintain"
-        case .steam:
-            return "Run the managed Steam + Metal setup flow"
-        case .finish:
-            return "Review the result and open Steam"
-        }
-    }
-}
-
 struct BackendJob: Identifiable, Hashable {
     let id: String
     let action: String

@@ -19,6 +19,22 @@ for moderated interface sessions, or the
 [Beta Testing Guide](docs/BETA_TESTING.md) for installation instructions,
 compatibility checks, and bug reports.
 
+## Quick Start
+
+1. **Open `NASE.app`.** On Apple Silicon, macOS may prompt to install Rosetta 2 —
+   accept it (this is the only system prerequisite).
+2. **Click "Set Up NASE."** One button downloads and installs everything NASE
+   needs — a managed Wine runtime, Metal graphics support, and Steam — into its
+   own folder. Nothing is installed system-wide; no Homebrew or Terminal
+   required. This takes a few minutes on the first run.
+3. **Sign in to Steam** from the Steam tab ("Open Steam"), install your games,
+   and launch them from your unified library.
+
+That's it. Other graphics profiles (D3DMetal, DXVK, Plain Wine) are created
+automatically the first time a game needs them. Advanced options — a custom
+Wine build, your own graphics payloads, a specific bottle — live behind
+"Advanced setup" in the wizard and in Settings, and most people never touch them.
+
 ## One Library, Every Source
 
 - Browse Steam, Epic, GOG, native Mac apps, and personal Windows games together.
@@ -68,17 +84,15 @@ the user to accept Apple's license. D3DMetal must be imported from a compatible
 licensed installation. MoltenVK is included in the checksum-pinned Sikarugir
 Wine runtime downloaded internally for DXVK-macOS.
 
-The Recommended Gaming Environment guides a new installation through:
+A single "Set Up NASE" action does all of the following automatically — you
+don't perform these as separate steps:
 
-1. Runtime verification
-2. Required managed downloads
-3. Compatibility profile creation
-4. Steam installation
-5. Library attachment
-6. Steam sign-in
+- Verifies the runtime and downloads any missing managed components
+- Creates the recommended DXMT compatibility profile
+- Installs Steam into the managed bottle and attaches the shared library
 
-Completed work is preserved if a step fails, with focused repair actions and
-logs available inside the app.
+You then sign in to Steam once. Completed work is preserved if any part fails,
+with focused repair actions and logs available inside the app.
 
 ## Built for Real Game Libraries
 
