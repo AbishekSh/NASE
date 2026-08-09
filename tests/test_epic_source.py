@@ -45,7 +45,9 @@ class EpicSourceTests(unittest.TestCase):
                 ]
             },
         }]
-        self.assertEqual(normalize_epic_games(owned, [])[0].art_url, wide)
+        game = normalize_epic_games(owned, [])[0]
+        self.assertEqual(game.art_url, wide)
+        self.assertEqual(game.portrait_art_url, tall)
 
     def test_artwork_falls_back_to_a_safe_available_image(self) -> None:
         fallback = "https://cdn2.unrealengine.com/item/fallback.jpg"

@@ -118,151 +118,203 @@ struct GameCard: View {
     }
 
     private var gridCard: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ZStack(alignment: .bottomTrailing) {
-                BannerArtwork(
-                    url: game.bannerURL,
-                    title: game.title,
-                    height: 140,
-                    installURL: game.installURL,
-                    runner: game.runner,
-                    appid: game.backendID,
-                    steamCacheURL: steamCacheURL,
-                    showsTitleOverlay: false,
-                    isHovered: isHovered
-                )
-
-                HStack(spacing: 5) {
-                    Image(systemName: game.runner.symbolName)
-                        .font(.system(size: 11, weight: .bold))
-                    Text(game.runner.rawValue)
-                        .font(.system(size: 11, weight: .bold))
-                }
-                .foregroundStyle(game.runner.brandForeground)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 5)
-                .background(game.runner.brandBadgeBg)
-                .clipShape(Capsule())
-                .overlay(
-                    Capsule()
-                        .stroke(Color.white.opacity(0.15), lineWidth: 1)
-                )
-                .shadow(color: .black.opacity(0.3), radius: 4, y: 2)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .padding(10)
-
-                Button {
-                    canStop ? onStop() : onLaunch()
-                } label: {
-                    ZStack {
-                        Circle()
-                            .fill(primaryActionColor)
-                            .frame(width: 40, height: 40)
-                            .shadow(color: primaryActionColor.opacity(isHovered ? 0.5 : 0.25), radius: isHovered ? 8 : 4, y: 3)
-
-                        Image(systemName: primaryActionSymbol)
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundStyle(canStop ? Color.white : Color.black)
-                    }
-                    .overlay(Circle().stroke(.white.opacity(0.25), lineWidth: 1))
-                }
-                .buttonStyle(.plain)
-                .disabled(launchStatus?.phase == .launching || launchStatus?.phase == .stopping)
-                .help(primaryActionHelp)
-                .padding(10)
-                .scaleEffect(isHovered ? 1.05 : 1.0)
-                .animation(.easeOut(duration: 0.15), value: isHovered)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .center, spacing: 8) {
-                    Text(game.title)
-                        .font(.system(size: 15, weight: .bold, design: .rounded))
-                        .foregroundStyle(theme.textPrimary)
-                        .lineLimit(1)
-
-                    Spacer(minLength: 4)
-
-                    if allowsReordering {
-                        Image(systemName: "line.3.horizontal")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(theme.textMuted)
-                            .frame(width: 24, height: 24)
-                            .contentShape(Rectangle())
-                            .onDrag {
-                                onDragStarted()
-                                return NSItemProvider(object: game.pinID as NSString)
-                            } preview: {
-                                DragBadge(title: game.title)
-                            }
-                            .help("Drag to reorder")
-                    }
-
-                    cardActionMenu
-                }
-
-                HStack(spacing: 6) {
-                    Text(game.status)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(theme.textSecondary)
-
-                    if collection != .none {
-                        Pill(text: collection.rawValue, tint: collection.color.opacity(0.18), foreground: collection.color)
-                    }
-
-                    if let launchStatus {
-                        Pill(text: launchStatus.phase.rawValue, tint: launchTint(for: launchStatus.phase), foreground: launchForeground(for: launchStatus.phase))
-                    }
-
-                    Spacer()
-
-                    if let statsText = game.statsText, !statsText.isEmpty {
-                        HStack(spacing: 3) {
-                            Image(systemName: "clock.fill")
-                                .font(.system(size: 9))
-                            Text(statsText)
-                        }
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(theme.textMuted)
-                        .lineLimit(1)
-                    }
+        // Size the card from a definite Color.clear sizer so every cell reserves
+        // the same 2:3 height whether its art has decoded yet or is still showing
+        // a skeleton/fallback (a content-driven aspect ratio collapses otherwise).
+        Color.clear
+            .aspectRatio(2.0 / 3.0, contentMode: .fit)
+            .overlay {
+                CoverArtwork(
+                    cacheKey: "\(game.pinID):portrait",
+                    sources: portraitSources,
+                    maxPixelSize: 600,
+                    contentMode: .fill
+                ) {
+                    fallbackCover
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(theme.panelBackground)
+            .clipped()
+        .overlay {
+            LinearGradient(
+                colors: [.clear, .clear, .black.opacity(isHovered ? 0.9 : 0.66)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .animation(.easeOut(duration: 0.18), value: isHovered)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(theme.panelBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(alignment: .topLeading) {
+            runnerBadge.padding(9)
+        }
+        .overlay(alignment: .topTrailing) {
+            if collection != .none {
+                Pill(text: collection.rawValue, tint: collection.color.opacity(0.9), foreground: .white)
+                    .padding(9)
+            }
+        }
+        .overlay(alignment: .bottomLeading) {
+            gridBottomOverlay.padding(10)
+        }
+        .background(theme.panelRaised)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(isHovered ? theme.panelHoverBorder : theme.panelBorder, lineWidth: isHovered ? 1.5 : 1)
         )
-        .shadow(color: .black.opacity(isHovered ? 0.16 : 0.05), radius: isHovered ? 14 : 5, y: isHovered ? 6 : 2)
-        .scaleEffect(isHovered ? 1.012 : 1.0)
+        .shadow(color: .black.opacity(isHovered ? 0.28 : 0.12), radius: isHovered ? 16 : 7, y: isHovered ? 8 : 3)
+        .scaleEffect(isHovered ? 1.02 : 1.0)
         .opacity(isDragging ? 0.35 : 1.0)
         .animation(.easeOut(duration: 0.16), value: isHovered)
         .onHover { hovering in
             isHovered = hovering
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(game.title), \(game.runner.rawValue), \(game.status)")
+    }
+
+    private var gridBottomOverlay: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(game.title)
+                .font(.system(size: 14, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+                .shadow(color: .black.opacity(0.6), radius: 4, y: 1)
+
+            if isHovered {
+                HStack(spacing: 8) {
+                    primaryActionButton(diameter: 38)
+                    Spacer(minLength: 4)
+                    if allowsReordering { reorderHandle(size: 26) }
+                    cardActionMenu
+                }
+                .transition(.opacity)
+            } else if let launchStatus, launchStatus.phase.isActive {
+                Pill(
+                    text: launchStatus.phase.rawValue,
+                    tint: launchTint(for: launchStatus.phase),
+                    foreground: launchForeground(for: launchStatus.phase)
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(.easeOut(duration: 0.16), value: isHovered)
+    }
+
+    private var runnerBadge: some View {
+        HStack(spacing: 5) {
+            Image(systemName: game.runner.symbolName)
+                .font(.system(size: 11, weight: .bold))
+            Text(game.runner.rawValue)
+                .font(.system(size: 11, weight: .bold))
+        }
+        .foregroundStyle(game.runner.brandForeground)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .background(game.runner.brandBadgeBg)
+        .clipShape(Capsule())
+        .overlay(Capsule().stroke(Color.white.opacity(0.15), lineWidth: 1))
+        .shadow(color: .black.opacity(0.3), radius: 4, y: 2)
+    }
+
+    private func primaryActionButton(diameter: CGFloat) -> some View {
+        Button {
+            canStop ? onStop() : onLaunch()
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(primaryActionColor)
+                    .frame(width: diameter, height: diameter)
+                    .shadow(color: primaryActionColor.opacity(isHovered ? 0.5 : 0.25), radius: isHovered ? 8 : 4, y: 3)
+                Image(systemName: primaryActionSymbol)
+                    .font(.system(size: diameter * 0.38, weight: .bold))
+                    .foregroundStyle(canStop ? Color.white : Color.black)
+            }
+            .overlay(Circle().stroke(.white.opacity(0.25), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .disabled(launchStatus?.phase == .launching || launchStatus?.phase == .stopping)
+        .help(primaryActionHelp)
+        .accessibilityLabel(primaryActionHelp)
+    }
+
+    private func reorderHandle(size: CGFloat) -> some View {
+        Image(systemName: "line.3.horizontal")
+            .font(.system(size: size * 0.46, weight: .bold))
+            .foregroundStyle(.white.opacity(0.85))
+            .frame(width: size, height: size)
+            .contentShape(Rectangle())
+            .onDrag {
+                onDragStarted()
+                return NSItemProvider(object: game.pinID as NSString)
+            } preview: {
+                DragBadge(title: game.title)
+            }
+            .help("Drag to reorder")
+            .accessibilityLabel("Reorder \(game.title)")
+    }
+
+    // Ordered art candidates: local Steam portrait cache, then the store's
+    // portrait URL, then the landscape banner as a last resort.
+    private var portraitSources: [ArtworkLoader.Source] {
+        var sources = steamLocalSources([
+            "\(steamAppID)_library_600x900.jpg",
+            "\(steamAppID)_library_600x900.png",
+            "\(steamAppID)/library_600x900.jpg",
+            "\(steamAppID)/library_600x900.png",
+        ])
+        if let portrait = game.portraitURL { sources.append(source(for: portrait)) }
+        if let banner = game.bannerURL { sources.append(source(for: banner)) }
+        return sources
+    }
+
+    private var landscapeSources: [ArtworkLoader.Source] {
+        var sources = steamLocalSources([
+            "\(steamAppID)_library_hero.jpg",
+            "\(steamAppID)_library_hero.png",
+            "\(steamAppID)/library_hero.jpg",
+            "\(steamAppID)_header.jpg",
+            "\(steamAppID)/header.jpg",
+        ])
+        if let banner = game.bannerURL { sources.append(source(for: banner)) }
+        if let portrait = game.portraitURL { sources.append(source(for: portrait)) }
+        return sources
+    }
+
+    private var steamAppID: String { game.backendID ?? "" }
+
+    private func steamLocalSources(_ names: [String]) -> [ArtworkLoader.Source] {
+        guard game.runner == .steam, game.backendID != nil, let root = steamCacheURL else { return [] }
+        return names.map { .local(root.appendingPathComponent($0)) }
+    }
+
+    private func source(for url: URL) -> ArtworkLoader.Source {
+        url.isFileURL ? .local(url) : .remote(url)
+    }
+
+    private var fallbackCover: some View {
+        ZStack {
+            LinearGradient(
+                colors: [ArtworkLoader.fallbackColor(for: game.pinID), ArtworkLoader.fallbackColor(for: game.pinID).opacity(0.5)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            Image(systemName: game.runner.symbolName)
+                .font(.system(size: 38, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.9))
+        }
     }
 
     private var listCard: some View {
         HStack(spacing: 0) {
-            BannerArtwork(
-                url: game.bannerURL,
-                title: game.title,
-                height: 84,
-                installURL: game.installURL,
-                runner: game.runner,
-                appid: game.backendID,
-                steamCacheURL: steamCacheURL,
-                showsTitleOverlay: false,
-                isHovered: isHovered
-            )
-            .frame(width: 160)
+            CoverArtwork(
+                cacheKey: "\(game.pinID):landscape",
+                sources: landscapeSources,
+                maxPixelSize: 320,
+                contentMode: .fill
+            ) {
+                fallbackCover
+            }
+            .frame(width: 160, height: 84)
+            .clipped()
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .padding(6)
 
@@ -334,23 +386,8 @@ struct GameCard: View {
             cardActionMenu
                 .padding(.horizontal, 4)
 
-            Button {
-                canStop ? onStop() : onLaunch()
-            } label: {
-                ZStack {
-                    Circle()
-                        .fill(primaryActionColor)
-                        .frame(width: 36, height: 36)
-
-                    Image(systemName: primaryActionSymbol)
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(canStop ? Color.white : Color.black)
-                }
-            }
-            .buttonStyle(.plain)
-            .disabled(launchStatus?.phase == .launching || launchStatus?.phase == .stopping)
-            .help(primaryActionHelp)
-            .padding(.trailing, 12)
+            primaryActionButton(diameter: 36)
+                .padding(.trailing, 12)
         }
         .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
         .background(theme.panelBackground)

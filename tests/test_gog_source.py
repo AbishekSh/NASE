@@ -70,7 +70,11 @@ class GOGSourceTests(unittest.TestCase):
                     "type": "game",
                     "game_id": "canonical-123",
                     "title": {"*": "Good Old Game"},
-                    "game": {"visible_in_library": True, "background": {"url_format": "https://images.gog.com/banner.{ext}"}},
+                    "game": {
+                        "visible_in_library": True,
+                        "background": {"url_format": "https://images.gog.com/banner.{ext}"},
+                        "vertical_cover": {"url_format": "https://images.gog.com/cover.{ext}"},
+                    },
                 }
 
             with patch("mysteamwine.sources.gog.app_support_root", return_value=root / "support"):
@@ -83,6 +87,7 @@ class GOGSourceTests(unittest.TestCase):
         self.assertEqual(games[0].library_id, "gog:123")
         self.assertTrue(games[0].installed)
         self.assertEqual(games[0].art_url, "https://images.gog.com/banner.jpg")
+        self.assertEqual(games[0].portrait_art_url, "https://images.gog.com/cover.jpg")
 
     def test_filters_hidden_spam_entitlements_and_duplicate_canonical_releases(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

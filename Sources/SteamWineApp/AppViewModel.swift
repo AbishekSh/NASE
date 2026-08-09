@@ -2732,6 +2732,7 @@ final class AppViewModel {
                         status: game.installed ? (game.updateAvailable ? "Update Available" : "Installed") : "Owned",
                         statsText: game.version,
                         bannerURL: game.artURL.flatMap(URL.init(string:)),
+                        portraitURL: game.portraitArtURL.flatMap(URL.init(string:)),
                         installURL: installURL,
                         launchURL: installURL
                     )
@@ -2776,6 +2777,7 @@ final class AppViewModel {
                     return LibraryGame(pinID: game.libraryID, backendID: game.storeID, title: game.title,
                                        runner: .gog, capsule: "GOG", status: game.installed ? "Installed" : "Owned",
                                        statsText: game.version, bannerURL: game.artURL.flatMap(URL.init(string:)),
+                                       portraitURL: game.portraitArtURL.flatMap(URL.init(string:)),
                                        installURL: installURL, launchURL: installURL)
                 }
                 selectedGame = gogGames.first
@@ -2803,6 +2805,7 @@ final class AppViewModel {
                     status: "Installed",
                     statsText: installURL.flatMap(directorySizeText),
                     bannerURL: steamBannerURL(for: game.appid),
+                    portraitURL: steamPortraitURL(for: game.appid),
                     installURL: installURL,
                     launchURL: installURL,
                     storeURL: steamStoreURL(for: game.appid)
@@ -2824,6 +2827,10 @@ final class AppViewModel {
 
     private func steamBannerURL(for appid: String) -> URL? {
         URL(string: "https://cdn.cloudflare.steamstatic.com/steam/apps/\(appid)/library_hero.jpg")
+    }
+
+    private func steamPortraitURL(for appid: String) -> URL? {
+        URL(string: "https://cdn.cloudflare.steamstatic.com/steam/apps/\(appid)/library_600x900.jpg")
     }
 
     private func steamStoreURL(for appid: String) -> URL? {
@@ -4211,6 +4218,7 @@ final class AppViewModel {
             status: game.status,
             statsText: statsText,
             bannerURL: bannerURL,
+            portraitURL: game.portraitURL,
             installURL: game.installURL,
             launchURL: game.launchURL,
             storeURL: game.storeURL

@@ -29,6 +29,7 @@ class SourceGame:
     version: str | None = None
     update_available: bool = False
     art_url: str | None = None
+    portrait_art_url: str | None = None
 
     def as_dict(self) -> dict:
         return asdict(self)

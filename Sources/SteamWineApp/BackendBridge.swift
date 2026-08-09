@@ -48,6 +48,7 @@ struct BackendSourceGame: Identifiable {
     let version: String?
     let updateAvailable: Bool
     let artURL: String?
+    let portraitArtURL: String?
 }
 
 struct BackendSourceStatus {
@@ -168,6 +169,7 @@ private struct BackendJSONSourceGame: Decodable {
     let version: String?
     let update_available: Bool
     let art_url: String?
+    let portrait_art_url: String?
 }
 
 private struct BackendJSONSourceStatus: Decodable {
@@ -1031,7 +1033,8 @@ enum BackendBridge {
                 installPath: $0.install_path,
                 version: $0.version,
                 updateAvailable: $0.update_available,
-                artURL: $0.art_url
+                artURL: $0.art_url,
+                portraitArtURL: $0.portrait_art_url
             )
         } ?? []
     }
