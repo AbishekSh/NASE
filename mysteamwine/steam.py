@@ -679,12 +679,19 @@ def launch_app(
     wait: bool = True,
     restart_existing: bool = True,
     graphics_source: Path | None = None,
+    silent: bool = True,
 ) -> tuple[int, str]:
+    # "-silent" starts the Windows Steam client minimized to the tray with no
+    # window, so launching a game does not pop Steam's UI. The client still runs
+    # (Steam DRM/SteamAPI games need it); it is just hidden. If the account is
+    # not signed in, use "Open Steam" to sign in once — Steam then auto-logs in
+    # on subsequent silent launches.
+    startup_args = ["-silent"] if silent else []
     return run_steam(
         bottle=bottle,
         wine64_path=wine64_path,
         steam_path=steam_windows_path(),
-        extra_args=["-applaunch", appid],
+        extra_args=[*startup_args, "-applaunch", appid],
         wait=wait,
         graphics_backend=graphics_backend,
         restart_existing=restart_existing and graphics_backend != "none",
