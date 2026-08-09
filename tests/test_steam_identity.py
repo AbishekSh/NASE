@@ -7,9 +7,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from mysteamwine import steam_identity
-from mysteamwine.bottle import bottle_paths
-from mysteamwine.steam import parse_vdf_file, steam_prefix_root
+from nase import steam_identity
+from nase.bottle import bottle_paths
+from nase.steam import parse_vdf_file, steam_prefix_root
 
 
 LOGINUSERS = '''"users"

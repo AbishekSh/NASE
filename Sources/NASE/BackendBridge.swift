@@ -277,7 +277,7 @@ struct BackendContext {
         let bundledBackend = Bundle.main.resourceURL?.appendingPathComponent("Backend", isDirectory: true)
         let repoRoot: URL
         if let bundledBackend,
-           FileManager.default.fileExists(atPath: bundledBackend.appendingPathComponent("mysteamwine.py").path) {
+           FileManager.default.fileExists(atPath: bundledBackend.appendingPathComponent("nase.py").path) {
             repoRoot = bundledBackend
         } else {
             repoRoot = sourceRepoRoot
@@ -576,12 +576,12 @@ enum BackendBridge {
     }
 
     static func preview(_ action: BackendAction, context: BackendContext) -> String {
-        ([context.pythonCommand, "mysteamwine.py"] + arguments(for: action, context: context))
+        ([context.pythonCommand, "nase.py"] + arguments(for: action, context: context))
             .joined(separator: " ")
     }
 
     static func preflight(context: BackendContext) async -> Bool {
-        let script = context.repoRoot.appendingPathComponent("mysteamwine.py")
+        let script = context.repoRoot.appendingPathComponent("nase.py")
         guard FileManager.default.fileExists(atPath: script.path) else { return false }
         let process = Process()
         if context.pythonCommand.contains("/") {
@@ -623,10 +623,10 @@ enum BackendBridge {
         process.currentDirectoryURL = context.repoRoot
         if context.pythonCommand.contains("/") {
             process.executableURL = URL(fileURLWithPath: context.pythonCommand)
-            process.arguments = ["mysteamwine.py"] + arguments(for: action, context: context)
+            process.arguments = ["nase.py"] + arguments(for: action, context: context)
         } else {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = [context.pythonCommand, "mysteamwine.py"] + arguments(for: action, context: context)
+            process.arguments = [context.pythonCommand, "nase.py"] + arguments(for: action, context: context)
         }
         process.environment = ProcessInfo.processInfo.environment.merging(
             ["PYTHONDONTWRITEBYTECODE": "1"]
@@ -952,7 +952,7 @@ enum BackendBridge {
                     return finalResponse
                 default:
                     throw NSError(
-                        domain: "SteamWineApp.BackendBridge",
+                        domain: "NASE.BackendBridge",
                         code: Int(process.terminationStatus),
                         userInfo: [NSLocalizedDescriptionKey: finalResponse.output]
                     )
@@ -965,7 +965,7 @@ enum BackendBridge {
         if process.terminationStatus != 0 {
             let message = plainText.isEmpty ? "Command failed." : plainText
             throw NSError(
-                domain: "SteamWineApp.BackendBridge",
+                domain: "NASE.BackendBridge",
                 code: Int(process.terminationStatus),
                 userInfo: [NSLocalizedDescriptionKey: message]
             )

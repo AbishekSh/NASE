@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import mysteamwine.catalog as catalog
-from mysteamwine.catalog import CATALOG
+import nase.catalog as catalog
+from nase.catalog import CATALOG
 
 
 class DownloadResponse(io.BytesIO):

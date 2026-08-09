@@ -5,9 +5,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from mysteamwine.bottle import Bottle
-import mysteamwine.steam as steam
-from mysteamwine.steam import run_steam, steam_client_is_ready, validate_executable_compatibility
+from nase.bottle import Bottle
+import nase.steam as steam
+from nase.steam import run_steam, steam_client_is_ready, validate_executable_compatibility
 
 
 class SteamLaunchTests(unittest.TestCase):
@@ -40,11 +40,11 @@ class SteamLaunchTests(unittest.TestCase):
             captured["extra_args"] = extra_args
             return 0, ""
 
-        with patch("mysteamwine.steam.run_steam", side_effect=fake_run_steam):
+        with patch("nase.steam.run_steam", side_effect=fake_run_steam):
             steam.launch_app(bottle=bottle, wine64_path=Path("/missing/wine"), appid="12345")
         self.assertEqual(captured["extra_args"], ["-silent", "-applaunch", "12345"])
 
-        with patch("mysteamwine.steam.run_steam", side_effect=fake_run_steam):
+        with patch("nase.steam.run_steam", side_effect=fake_run_steam):
             steam.launch_app(bottle=bottle, wine64_path=Path("/missing/wine"), appid="12345", silent=False)
         self.assertEqual(captured["extra_args"], ["-applaunch", "12345"])
 
@@ -59,7 +59,7 @@ class SteamLaunchTests(unittest.TestCase):
             root / "cache",
         )
 
-        with patch("mysteamwine.steam.native_macos_steam_is_running", return_value=True):
+        with patch("nase.steam.native_macos_steam_is_running", return_value=True):
             code, message = run_steam(
                 bottle=bottle,
                 wine64_path=Path("/missing/wine"),
@@ -74,7 +74,7 @@ class SteamLaunchTests(unittest.TestCase):
         root = Path(tempfile.mkdtemp(prefix="nase-steam-test-"))
         executable = self.make_x86_executable(root)
         with (
-            patch("mysteamwine.steam.supports_wow64", return_value=False),
+            patch("nase.steam.supports_wow64", return_value=False),
             self.assertRaisesRegex(RuntimeError, "does not include WoW64"),
         ):
             validate_executable_compatibility(
@@ -87,7 +87,7 @@ class SteamLaunchTests(unittest.TestCase):
         root = Path(tempfile.mkdtemp(prefix="nase-steam-test-"))
         executable = self.make_x86_executable(root)
         with (
-            patch("mysteamwine.steam.supports_wow64", return_value=True),
+            patch("nase.steam.supports_wow64", return_value=True),
             self.assertRaisesRegex(RuntimeError, "D3DMetal supports 64-bit"),
         ):
             validate_executable_compatibility(
@@ -99,7 +99,7 @@ class SteamLaunchTests(unittest.TestCase):
     def test_x86_executable_accepts_dxmt_with_wow64(self) -> None:
         root = Path(tempfile.mkdtemp(prefix="nase-steam-test-"))
         executable = self.make_x86_executable(root)
-        with patch("mysteamwine.steam.supports_wow64", return_value=True):
+        with patch("nase.steam.supports_wow64", return_value=True):
             architecture = validate_executable_compatibility(
                 executable=executable,
                 wine_path=root / "wine",

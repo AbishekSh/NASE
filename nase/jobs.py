@@ -135,7 +135,7 @@ def _pid_is_our_backend(pid: int) -> bool:
         )
     except OSError:
         return False
-    return result.returncode == 0 and "mysteamwine.py" in result.stdout
+    return result.returncode == 0 and "nase.py" in result.stdout
 
 
 def reconcile_job(job: dict) -> dict:

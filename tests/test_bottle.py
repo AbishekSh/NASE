@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from mysteamwine import bottle
+from nase import bottle
 
 
 class AppSupportMigrationTests(unittest.TestCase):

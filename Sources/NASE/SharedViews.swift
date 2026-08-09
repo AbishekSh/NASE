@@ -153,7 +153,7 @@ struct EmptyLibraryState: View {
 }
 
 func naseResourceURL(named name: String, withExtension fileExtension: String) -> URL? {
-    let bundleName = "SteamWineApp_SteamWineApp.bundle"
+    let bundleName = "NASE_NASE.bundle"
     let candidates = [
         Bundle.main.resourceURL?.appendingPathComponent(bundleName, isDirectory: true),
         Bundle.main.bundleURL.appendingPathComponent(bundleName, isDirectory: true),

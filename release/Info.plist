@@ -4,7 +4,7 @@
 <dict>
     <key>CFBundleDevelopmentRegion</key><string>en</string>
     <key>CFBundleDisplayName</key><string>NASE</string>
-    <key>CFBundleExecutable</key><string>SteamWineApp</string>
+    <key>CFBundleExecutable</key><string>NASE</string>
     <key>CFBundleIconFile</key><string>NASE App Logo</string>
     <key>CFBundleIdentifier</key><string>com.nase.launcher</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>

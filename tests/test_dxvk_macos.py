@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from mysteamwine.bottle import Bottle
-from mysteamwine.dxvk_macos import (
+from nase.bottle import Bottle
+from nase.dxvk_macos import (
     PINNED_MOLTENVK_PAYLOADS,
     _gpu_from_dxvk_log,
     discover_moltenvk_source,
@@ -35,7 +35,7 @@ class DXVKMacOSProfileTests(unittest.TestCase):
         moltenvk.write_bytes(b"managed-moltenvk")
         supported_sha = next(iter(PINNED_MOLTENVK_PAYLOADS))
 
-        with patch("mysteamwine.dxvk_macos._sha256", return_value=supported_sha):
+        with patch("nase.dxvk_macos._sha256", return_value=supported_sha):
             discovered = discover_moltenvk_source(wine)
 
         self.assertEqual(discovered, moltenvk.resolve())

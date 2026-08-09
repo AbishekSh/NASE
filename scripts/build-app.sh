@@ -21,11 +21,11 @@ if [[ -e "$app_path" ]]; then
     rm -rf -- "$app_path"
 fi
 mkdir -p "$app_path/Contents/MacOS" "$app_path/Contents/Resources/Backend" "$app_path/Contents/Frameworks"
-cp "$bin_dir/SteamWineApp" "$app_path/Contents/MacOS/SteamWineApp"
+cp "$bin_dir/NASE" "$app_path/Contents/MacOS/NASE"
 cp release/Info.plist "$app_path/Contents/Info.plist"
 cp "assets/NASE App Logo.icns" "$app_path/Contents/Resources/NASE App Logo.icns"
-cp mysteamwine.py "$app_path/Contents/Resources/Backend/mysteamwine.py"
-cp -R mysteamwine "$app_path/Contents/Resources/Backend/mysteamwine"
+cp nase.py "$app_path/Contents/Resources/Backend/nase.py"
+cp -R nase "$app_path/Contents/Resources/Backend/nase"
 cp -R Tools "$app_path/Contents/Resources/Backend/Tools"
 python_runtime=$(scripts/prepare-python-runtime.sh)
 python_framework="$app_path/Contents/Frameworks/Python.framework"
@@ -47,7 +47,7 @@ rm -f -- \
     "$python_framework/lib/libtcl9tk9.0.dylib" \
     "$python_framework/lib/python3.13/lib-dynload/_tkinter.cpython-313-darwin.so"
 
-resource_bundle=$(find "$bin_dir" -maxdepth 1 -type d -name 'SteamWineApp_*.bundle' -print -quit)
+resource_bundle=$(find "$bin_dir" -maxdepth 1 -type d -name 'NASE_*.bundle' -print -quit)
 if [[ -z "$resource_bundle" ]]; then
     print -u2 "SwiftPM resource bundle was not produced."
     exit 1
