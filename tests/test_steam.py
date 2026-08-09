@@ -31,6 +31,23 @@ class SteamLaunchTests(unittest.TestCase):
         executable.write_bytes(payload)
         return executable
 
+    def test_launch_app_starts_steam_silently_by_default(self) -> None:
+        root = Path(tempfile.mkdtemp(prefix="nase-steam-test-"))
+        bottle = self.make_bottle(root)
+        captured: dict[str, list[str]] = {}
+
+        def fake_run_steam(*, extra_args, **_kwargs):
+            captured["extra_args"] = extra_args
+            return 0, ""
+
+        with patch("mysteamwine.steam.run_steam", side_effect=fake_run_steam):
+            steam.launch_app(bottle=bottle, wine64_path=Path("/missing/wine"), appid="12345")
+        self.assertEqual(captured["extra_args"], ["-silent", "-applaunch", "12345"])
+
+        with patch("mysteamwine.steam.run_steam", side_effect=fake_run_steam):
+            steam.launch_app(bottle=bottle, wine64_path=Path("/missing/wine"), appid="12345", silent=False)
+        self.assertEqual(captured["extra_args"], ["-applaunch", "12345"])
+
     def test_native_macos_steam_blocks_windows_steam_launch(self) -> None:
         root = Path(tempfile.mkdtemp(prefix="nase-steam-test-"))
         bottle = Bottle(
