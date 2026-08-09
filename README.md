@@ -174,8 +174,10 @@ Run the `NASE` target in Xcode. To verify a command-line build:
 swift build
 ```
 
-Release packaging, Developer ID signing, notarization, updates, and the
-clean-machine release gate are documented in
+New contributor? [CONTRIBUTING.md](CONTRIBUTING.md) covers prerequisites, the
+architecture in one minute, how to build and run, and the checks to run before
+you push. Release packaging, Developer ID signing, notarization, updates, and
+the clean-machine release gate are documented in
 [docs/RELEASING.md](docs/RELEASING.md).
 
 ## How NASE Is Built
