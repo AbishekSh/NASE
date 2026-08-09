@@ -40,7 +40,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .general:
-            return "Updates and the default launch target"
+            return "App updates and uninstall"
         case .accounts:
             return "Shared sign-in and account controls"
         case .compatibility:
@@ -336,7 +336,6 @@ struct SettingsSheet: View {
         switch selectedSection {
         case .general:
             settingsReleasePanel
-            settingsTargetPanel
             settingsUninstallPanel
         case .accounts:
             settingsSteamIdentityPanel
@@ -356,6 +355,7 @@ struct SettingsSheet: View {
         case .advanced:
             settingsOperationsPanel
             settingsAdvancedTargetPanel
+            settingsTargetPanel
             settingsGraphicsPanel
             settingsCommandPanel
             settingsActivityPanel
