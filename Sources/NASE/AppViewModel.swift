@@ -396,6 +396,17 @@ final class AppViewModel {
         activeBackendJobs.first
     }
 
+    var sidebarStatus: SidebarStatus {
+        SidebarStatus.resolve(
+            preflight: backendPreflightState,
+            setup: dependencyBootstrapPhase,
+            hasWork: hasActiveBackendWork,
+            lastCheck: latestDoctorResult.map { healthStatus(from: $0) },
+            profileReady: compatibilityProfileIsReady(.dxmt),
+            usesExternalPrefix: !(backendContext.externalPrefix ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        )
+    }
+
     var hasActiveBackendWork: Bool {
         activeBackendJobs.contains { [.queued, .started, .cancelling].contains($0.status) }
     }

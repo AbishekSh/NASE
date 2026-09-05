@@ -297,24 +297,37 @@ struct ContentView: View {
 
     private var sidebarCommandCenter: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let job = model.currentOperationJob {
-                HStack(spacing: 9) {
+            let status = model.sidebarStatus
+            HStack(alignment: .top, spacing: 9) {
+                if status.isInProgress {
                     ProgressView().controlSize(.small)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(job.action).font(.system(size: 12, weight: .bold)).foregroundStyle(theme.textPrimary).lineLimit(1)
-                        Text(job.message).font(.system(size: 11)).foregroundStyle(theme.textSecondary).lineLimit(1)
+                        .accessibilityLabel(status.title)
+                } else {
+                    Image(systemName: status.needsAttention ? "exclamationmark.triangle.fill" : (status == .ready ? "checkmark.circle.fill" : "info.circle"))
+                        .foregroundStyle(status.needsAttention ? theme.accentRed : (status == .ready ? theme.accentGreen : theme.textSecondary))
+                        .accessibilityHidden(true)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(status.title)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(status == .ready ? theme.textSecondary : theme.textPrimary)
+                        .help(status.detail)
+                    if status != .ready {
+                        Text(status == .working ? (model.currentOperationJob?.message ?? status.detail) : status.detail)
+                            .font(.system(size: 11))
+                            .foregroundStyle(theme.textSecondary)
+                            .lineLimit(3)
+                            .help(status == .working ? (model.currentOperationJob?.message ?? status.detail) : status.detail)
+                    }
+                    if let actionTitle = status.actionTitle {
+                        Button(actionTitle) {
+                            if status.opensSetup { model.openSetupWizard() }
+                            else { model.openSettings() }
+                        }
+                        .controlSize(.small)
                     }
                 }
-                .transition(.opacity.combined(with: .move(edge: .bottom)))
-            } else {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(theme.accentGreen)
-                        .frame(width: 8, height: 8)
-                    Text("Backend Ready")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(theme.textSecondary)
-                }
+                .fixedSize(horizontal: false, vertical: true)
             }
 
             Button {

@@ -2,6 +2,43 @@ import XCTest
 @testable import NASE
 
 final class BackendBridgeTests: XCTestCase {
+    func testSourceBuildFindsPythonWithoutShellPath() {
+        let python = "/opt/homebrew/bin/python3"
+        XCTAssertEqual(BackendContext.preferredPythonCommand(
+            stored: "python3", bundledPath: "/missing/bundled/python3",
+            developmentCandidates: [python], isExecutable: { $0 == python }
+        ), python)
+    }
+
+    func testBundledRuntimeTakesPriorityOverDevelopmentPython() {
+        XCTAssertEqual(BackendContext.preferredPythonCommand(
+            stored: "python3", bundledPath: "/bundled/python3",
+            developmentCandidates: ["/opt/homebrew/bin/python3"], isExecutable: { _ in true }
+        ), "/bundled/python3")
+    }
+
+    func testMissingSavedPythonFallsBackToBundledRuntime() {
+        let bundled = "/Applications/NASE.app/Contents/Frameworks/Python.framework/bin/python3"
+        XCTAssertEqual(BackendContext.preferredPythonCommand(
+            stored: "/private/tmp/deleted-build/python3", bundledPath: bundled,
+            isExecutable: { $0 == bundled }
+        ), bundled)
+    }
+
+    func testExistingCustomPythonIsPreserved() {
+        let custom = "/custom/python3"
+        XCTAssertEqual(BackendContext.preferredPythonCommand(
+            stored: custom, bundledPath: "/bundled/python3", isExecutable: { _ in true }
+        ), custom)
+    }
+
+    func testMissingBundleDoesNotHideInvalidCustomPath() {
+        let custom = "/missing/python3"
+        XCTAssertEqual(BackendContext.preferredPythonCommand(
+            stored: custom, bundledPath: "/missing/bundled/python3", isExecutable: { _ in false }
+        ), custom)
+    }
+
     private let context = BackendContext(
         repoRoot: URL(fileURLWithPath: "/Applications/NASE.app/Contents/Resources/Backend"),
         pythonCommand: "/Applications/NASE.app/Contents/Frameworks/Python.framework/bin/python3",

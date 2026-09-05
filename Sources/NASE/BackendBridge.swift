@@ -285,13 +285,12 @@ struct BackendContext {
         let bundledPython = Bundle.main.bundleURL
             .appendingPathComponent("Contents/Frameworks/Python.framework/bin/python3")
         let storedPython = defaults.string(forKey: BackendSettingsKey.pythonCommand)
-        let bundledPythonIsAvailable = FileManager.default.isExecutableFile(atPath: bundledPython.path)
-        let defaultPython: String
-        if bundledPythonIsAvailable, storedPython == nil || storedPython == "python3" {
-            defaultPython = bundledPython.path
-        } else {
-            defaultPython = storedPython ?? "python3"
-        }
+        let defaultPython = preferredPythonCommand(
+            stored: storedPython,
+            bundledPath: bundledPython.path,
+            developmentCandidates: Bundle.main.bundleURL.pathExtension == "app"
+                ? [] : ["/opt/homebrew/bin/python3", "/usr/local/bin/python3"]
+        )
 
         return BackendContext(
             repoRoot: repoRoot,
@@ -304,6 +303,27 @@ struct BackendContext {
             bottleName: defaults.string(forKey: BackendSettingsKey.bottleName) ?? "Default",
             externalPrefix: defaults.string(forKey: BackendSettingsKey.externalPrefix)
         )
+    }
+
+    static func preferredPythonCommand(
+        stored: String?,
+        bundledPath: String,
+        developmentCandidates: [String] = [],
+        isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    ) -> String {
+        let savedCommand = stored?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let missingSavedPath = savedCommand.map { $0.contains("/") && !isExecutable($0) } ?? false
+        // A saved path into a temporary or moved app bundle must not shadow
+        // the private runtime shipped with the app that is actually running.
+        if isExecutable(bundledPath),
+           savedCommand == nil || savedCommand == "" || savedCommand == "python3" || missingSavedPath {
+            return bundledPath
+        }
+        if savedCommand == nil || savedCommand == "" || savedCommand == "python3",
+           let developmentPython = developmentCandidates.first(where: isExecutable) {
+            return developmentPython
+        }
+        return savedCommand.flatMap { $0.isEmpty ? nil : $0 } ?? "python3"
     }
 
     private static func detectedGPTKWinePath() -> String {
