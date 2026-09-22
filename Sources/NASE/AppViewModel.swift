@@ -25,30 +25,9 @@ private final class ExitWatcher {
     }
 }
 
-private enum LibraryStorageKey {
-    static let nativeApps = "library.nativeApps"
-    static let wineApps = "library.wineApps"
-    static let pinnedIDs = "library.pinnedIDs"
-    static let steamOrder = "library.steamOrder"
-    static let hiddenSteamAppIDs = "library.hiddenSteamAppIDs"
-    static let gameSettings = "library.gameSettings"
-    static let sourceHealth = "library.sourceHealth"
-    static let wineRuntimes = "library.wineRuntimes"
-    static let didCompleteInitialSetup = "library.didCompleteInitialSetup"
-}
-
 private enum MemoryLimit {
     static let activityLogCharacters = 120_000
     static let displayedLogBytes = 256 * 1024
-}
-
-private struct StoredLibraryItem: Codable {
-    let pinID: String?
-    let title: String
-    let runner: String
-    let installPath: String
-    let launchPath: String?
-    let status: String?
 }
 
 struct StoredGameSettings: Codable {
@@ -161,7 +140,9 @@ final class AppViewModel {
     private(set) var uninstallStatusMessage: String = ""
     var backendContext: BackendContext = .default()
     var hasAttemptedSteamDetection: Bool = false
-    var sortOption: LibrarySortOption = .manual
+    var sortOption: LibrarySortOption = .availability {
+        didSet { libraryPersistence.saveSortOption(sortOption) }
+    }
     var collectionFilter: GameCollection?
     var sourceFilter: LibrarySourceFilter = .all
     var editingGamePinID: String?
@@ -207,6 +188,7 @@ final class AppViewModel {
     /// Per-game keyboard remapping. It needs nothing from the backend except
     /// the PIDs `sessions.py` already tracks, so it stays wholly in the app.
     let keyboardRemap = KeyboardRemapService()
+    private let libraryPersistence: any LibraryPersisting
     private var launchStateGeneration = 0
     @ObservationIgnored private var launchSessionMonitor: Task<Void, Never>?
     @ObservationIgnored private var applicationActivationObserver: NSObjectProtocol?
@@ -265,15 +247,17 @@ final class AppViewModel {
         return URL(fileURLWithPath: backendContext.winePath).lastPathComponent
     }
 
-    init() {
-        nativeApps = loadStoredItems(forKey: LibraryStorageKey.nativeApps)
-        wineApps = loadStoredItems(forKey: LibraryStorageKey.wineApps)
-        pinnedGameIDs = UserDefaults.standard.stringArray(forKey: LibraryStorageKey.pinnedIDs) ?? []
-        steamOrderIDs = UserDefaults.standard.stringArray(forKey: LibraryStorageKey.steamOrder) ?? []
-        hiddenSteamAppIDs = UserDefaults.standard.stringArray(forKey: LibraryStorageKey.hiddenSteamAppIDs) ?? []
-        gameSettingsByPinID = loadGameSettings()
-        sourceHealth = loadSourceHealth()
-        wineRuntimes = loadWineRuntimes()
+    init(libraryPersistence: any LibraryPersisting = UserDefaultsLibraryPersistence()) {
+        self.libraryPersistence = libraryPersistence
+        nativeApps = loadStoredItems(for: .mac, persistence: libraryPersistence)
+        wineApps = loadStoredItems(for: .wine, persistence: libraryPersistence)
+        pinnedGameIDs = libraryPersistence.pinnedIDs()
+        steamOrderIDs = libraryPersistence.steamOrderIDs()
+        sortOption = libraryPersistence.sortOption()
+        hiddenSteamAppIDs = libraryPersistence.hiddenSteamAppIDs()
+        gameSettingsByPinID = libraryPersistence.gameSettings()
+        sourceHealth = libraryPersistence.sourceHealth()
+        wineRuntimes = libraryPersistence.wineRuntimes()
         migrateLegacyImportedAppIdentity()
         refreshWineRuntimes()
         selectedGame = nil
@@ -1281,7 +1265,7 @@ final class AppViewModel {
                     self.dependencyBootstrapPhase = .ready
                     self.dependencyBootstrapMessage = "Recommended DXMT environment is ready. Steam is opening for sign-in."
                     self.dependencyBootstrapProgress = 1
-                    UserDefaults.standard.set(true, forKey: LibraryStorageKey.didCompleteInitialSetup)
+                    self.libraryPersistence.setDidCompleteInitialSetup(true)
                     self.refreshRuntimeCenter()
                     self.refreshDependencyStatus()
                     self.rightPanelMessage = "Recommended gaming environment is ready."
@@ -1641,7 +1625,7 @@ final class AppViewModel {
         )
 
         wineApps = mergeLibraryGames(existing: wineApps, incoming: [installerGame])
-        persistStoredItems(wineApps, forKey: LibraryStorageKey.wineApps)
+        persistStoredItems(wineApps, for: .wine)
         selectedGame = installerGame
 
         executeDetached(
@@ -1712,15 +1696,15 @@ final class AppViewModel {
         switch game.runner {
         case .mac:
             nativeApps.removeAll { $0.pinID == game.pinID }
-            persistStoredItems(nativeApps, forKey: LibraryStorageKey.nativeApps)
+            persistStoredItems(nativeApps, for: .mac)
         case .wine:
             wineApps.removeAll { $0.pinID == game.pinID }
-            persistStoredItems(wineApps, forKey: LibraryStorageKey.wineApps)
+            persistStoredItems(wineApps, for: .wine)
         case .steam:
             if let appid = game.backendID, !appid.isEmpty {
                 hiddenSteamAppIDs.append(appid)
                 hiddenSteamAppIDs = hiddenSteamAppIDs.uniquedPreservingOrder()
-                UserDefaults.standard.set(hiddenSteamAppIDs, forKey: LibraryStorageKey.hiddenSteamAppIDs)
+                libraryPersistence.saveHiddenSteamAppIDs(hiddenSteamAppIDs)
             }
             discoveredSteamGames.removeAll { $0.pinID == game.pinID }
             steamOrderIDs.removeAll { $0 == game.pinID }
@@ -1754,10 +1738,10 @@ final class AppViewModel {
             persistPinnedIDs()
         case .mac:
             reorderGames(&nativeApps, draggedID: dragged.pinID, targetID: target.pinID)
-            persistStoredItems(nativeApps, forKey: LibraryStorageKey.nativeApps)
+            persistStoredItems(nativeApps, for: .mac)
         case .wine:
             reorderGames(&wineApps, draggedID: dragged.pinID, targetID: target.pinID)
-            persistStoredItems(wineApps, forKey: LibraryStorageKey.wineApps)
+            persistStoredItems(wineApps, for: .wine)
         case .steam:
             reorderGames(&discoveredSteamGames, draggedID: dragged.pinID, targetID: target.pinID)
             steamOrderIDs = discoveredSteamGames.map(\.pinID)
@@ -2647,10 +2631,10 @@ final class AppViewModel {
     }
 
     private func performInitialSetupIfNeeded() {
-        guard !UserDefaults.standard.bool(forKey: LibraryStorageKey.didCompleteInitialSetup) else { return }
+        guard !libraryPersistence.didCompleteInitialSetup else { return }
 
         if compatibilityProfileIsReady(.dxmt) {
-            UserDefaults.standard.set(true, forKey: LibraryStorageKey.didCompleteInitialSetup)
+            libraryPersistence.setDidCompleteInitialSetup(true)
             return
         }
 
@@ -3051,7 +3035,7 @@ final class AppViewModel {
                     storeURL: steamStoreURL(for: game.appid)
                 )
             }
-        return applySteamOrder(to: mapped)
+        return mapped
     }
 
     private func shouldDisplaySteamGame(_ game: BackendGame) -> Bool {
@@ -3098,7 +3082,7 @@ final class AppViewModel {
             )
         }
         nativeApps = mergeLibraryGames(existing: nativeApps, incoming: imported)
-        persistStoredItems(nativeApps, forKey: LibraryStorageKey.nativeApps)
+        persistStoredItems(nativeApps, for: .mac)
         selectedGame = filteredGames.first
     }
 
@@ -3148,7 +3132,7 @@ final class AppViewModel {
             gameSettingsByPinID[game.pinID] = settings
         }
         persistGameSettings()
-        persistStoredItems(wineApps, forKey: LibraryStorageKey.wineApps)
+        persistStoredItems(wineApps, for: .wine)
         selectedGame = imported.first ?? filteredGames.first
         if let missingTarget = imported.first(where: { $0.launchURL == nil }) {
             openGameSettings(for: missingTarget)
@@ -3182,15 +3166,11 @@ final class AppViewModel {
         return merged
     }
 
-    private func loadStoredItems(forKey key: String) -> [LibraryGame] {
-        guard
-            let data = UserDefaults.standard.data(forKey: key),
-            let stored = try? JSONDecoder().decode([StoredLibraryItem].self, from: data)
-        else {
-            return []
-        }
-
-        return stored.compactMap { item in
+    private func loadStoredItems(
+        for runner: RunnerKind,
+        persistence: any LibraryPersisting
+    ) -> [LibraryGame] {
+        persistence.importedItems(for: runner).compactMap { item in
             guard let runner = RunnerKind(rawValue: item.runner) else { return nil }
             let installURL = URL(fileURLWithPath: item.installPath)
             let launchURL = item.launchPath.map(URL.init(fileURLWithPath:))
@@ -3218,7 +3198,7 @@ final class AppViewModel {
         }
     }
 
-    private func persistStoredItems(_ games: [LibraryGame], forKey key: String) {
+    private func persistStoredItems(_ games: [LibraryGame], for runner: RunnerKind) {
         let stored = games.compactMap { game -> StoredLibraryItem? in
             guard let installURL = game.installURL, game.runner == .mac || game.runner == .wine else {
                 return nil
@@ -3233,9 +3213,7 @@ final class AppViewModel {
             )
         }
 
-        if let data = try? JSONEncoder().encode(stored) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
+        libraryPersistence.saveImportedItems(stored, for: runner)
     }
 
     private func migrateLegacyImportedAppIdentity() {
@@ -3265,54 +3243,24 @@ final class AppViewModel {
             pinnedGameIDs = Array(NSOrderedSet(array: pinnedGameIDs)) as? [String] ?? pinnedGameIDs
             persistPinnedIDs()
         }
-        persistStoredItems(nativeApps, forKey: LibraryStorageKey.nativeApps)
-        persistStoredItems(wineApps, forKey: LibraryStorageKey.wineApps)
+        persistStoredItems(nativeApps, for: .mac)
+        persistStoredItems(wineApps, for: .wine)
     }
 
     private func persistPinnedIDs() {
-        UserDefaults.standard.set(pinnedGameIDs, forKey: LibraryStorageKey.pinnedIDs)
+        libraryPersistence.savePinnedIDs(pinnedGameIDs)
     }
 
     private func persistSteamOrder() {
-        UserDefaults.standard.set(steamOrderIDs, forKey: LibraryStorageKey.steamOrder)
-    }
-
-    private func loadGameSettings() -> [String: StoredGameSettings] {
-        guard
-            let data = UserDefaults.standard.data(forKey: LibraryStorageKey.gameSettings),
-            let stored = try? JSONDecoder().decode([String: StoredGameSettings].self, from: data)
-        else {
-            return [:]
-        }
-        return stored
+        libraryPersistence.saveSteamOrderIDs(steamOrderIDs)
     }
 
     private func persistGameSettings() {
-        guard let data = try? JSONEncoder().encode(gameSettingsByPinID) else { return }
-        UserDefaults.standard.set(data, forKey: LibraryStorageKey.gameSettings)
-    }
-
-    private func loadSourceHealth() -> [RunnerKind: HealthStatus] {
-        guard
-            let data = UserDefaults.standard.data(forKey: LibraryStorageKey.sourceHealth),
-            let stored = try? JSONDecoder().decode([String: HealthStatus].self, from: data)
-        else {
-            return [.home: .healthy, .mac: .healthy, .steam: .unknown, .wine: .unknown]
-        }
-
-        var mapped: [RunnerKind: HealthStatus] = [.home: .healthy, .mac: .healthy, .steam: .unknown, .wine: .unknown]
-        for (key, value) in stored {
-            if let runner = RunnerKind(rawValue: key) {
-                mapped[runner] = value
-            }
-        }
-        return mapped
+        libraryPersistence.saveGameSettings(gameSettingsByPinID)
     }
 
     private func persistSourceHealth() {
-        let stored = Dictionary(uniqueKeysWithValues: sourceHealth.map { ($0.key.rawValue, $0.value) })
-        guard let data = try? JSONEncoder().encode(stored) else { return }
-        UserDefaults.standard.set(data, forKey: LibraryStorageKey.sourceHealth)
+        libraryPersistence.saveSourceHealth(sourceHealth)
     }
 
     func settings(for game: LibraryGame) -> StoredGameSettings {
@@ -4429,20 +4377,8 @@ final class AppViewModel {
         return records
     }
 
-    private func loadWineRuntimes() -> [WineRuntimeRecord] {
-        guard
-            let data = UserDefaults.standard.data(forKey: LibraryStorageKey.wineRuntimes),
-            let stored = try? JSONDecoder().decode([WineRuntimeRecord].self, from: data)
-        else {
-            return []
-        }
-        return stored
-    }
-
     private func persistWineRuntimes() {
-        if let data = try? JSONEncoder().encode(wineRuntimes) {
-            UserDefaults.standard.set(data, forKey: LibraryStorageKey.wineRuntimes)
-        }
+        libraryPersistence.saveWineRuntimes(wineRuntimes)
     }
 
     private func underlyingGame(for game: LibraryGame) -> LibraryGame? {
@@ -4518,36 +4454,9 @@ final class AppViewModel {
     }
 
     private func sortGames(_ games: [LibraryGame]) -> [LibraryGame] {
-        switch sortOption {
-        case .manual:
-            return games
-        case .title:
-            return games.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-        case .size:
-            return games.sorted { numericSizeValue(for: $0.statsText) > numericSizeValue(for: $1.statsText) }
-        case .recent:
-            return games.sorted { (steamMetadata(for: $0)?.lastPlayed ?? .distantPast) > (steamMetadata(for: $1)?.lastPlayed ?? .distantPast) }
-        }
-    }
-
-    private func numericSizeValue(for statsText: String?) -> Double {
-        guard let statsText else { return 0 }
-        let parts = statsText.split(separator: "•").map { $0.trimmingCharacters(in: .whitespaces) }
-        guard let sizePart = parts.first else { return 0 }
-        let scanner = Scanner(string: sizePart)
-        guard let value = scanner.scanDouble() else { return 0 }
-        let unit = sizePart.replacingOccurrences(of: "[0-9. ]", with: "", options: .regularExpression).lowercased()
-        switch unit {
-        case "kb":
-            return value * 1_000
-        case "mb":
-            return value * 1_000_000
-        case "gb":
-            return value * 1_000_000_000
-        case "tb":
-            return value * 1_000_000_000_000
-        default:
-            return value
+        let manualOrderIDs = selectedRunner == .steam ? steamOrderIDs : []
+        return LibraryOrdering.order(games, by: sortOption, manualOrderIDs: manualOrderIDs) { [weak self] game in
+            self?.steamMetadata(for: game)?.lastPlayed
         }
     }
 
@@ -4757,16 +4666,6 @@ final class AppViewModel {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
         return "Played \(formatter.localizedString(for: date, relativeTo: Date()))"
-    }
-
-    private func applySteamOrder(to games: [LibraryGame]) -> [LibraryGame] {
-        let byID = Dictionary(uniqueKeysWithValues: games.map { ($0.pinID, $0) })
-        let ordered = steamOrderIDs.compactMap { byID[$0] }
-        let unordered = games.filter { !steamOrderIDs.contains($0.pinID) }
-        let merged = ordered + unordered
-        steamOrderIDs = merged.map(\.pinID)
-        persistSteamOrder()
-        return merged
     }
 
     private func reorderGames(_ games: inout [LibraryGame], draggedID: String, targetID: String) {

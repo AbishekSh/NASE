@@ -85,6 +85,12 @@ The SwiftUI layer owns library UX, app state, settings, sheets, and backend comm
   - backend job tracking and structured result history
   - settings validation and persistence
   - library import, refresh, launch, debug launch, log viewing, and health refresh orchestration
+- `LibraryPersistence.swift`: storage boundary for imported entries, preferences,
+  per-game settings, and runtime records. The current adapter preserves existing
+  UserDefaults data while allowing a later SQLite repository without changing
+  views or launch orchestration.
+- `LibraryOrdering.swift`: pure library presentation policy. Discovery order and
+  storage order do not determine how the grid is sorted.
 
 `AppViewModel.swift` is currently the largest file and is the main pressure point. Future work should move cohesive domains out only when the new file has a clear boundary, for example:
 
