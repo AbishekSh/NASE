@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import tarfile
+import json
 from pathlib import Path
 
 from .bottle import Bottle, ensure_bottle_dirs
@@ -80,7 +81,8 @@ def _upsert_user_reg_section(user_reg: Path, section: str, entries: dict[str, st
             else:
                 preserved.append(line)
 
-        merged = preserved + [f'"{key}"="{value}"' for key, value in entries.items()]
+        merged = preserved + [line for key, line in existing.items() if key not in entries]
+        merged += [f'"{key}"="{value}"' for key, value in entries.items()]
         lines[start:end] = [header, *merged]
 
     user_reg.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -140,7 +142,7 @@ def _enable_dxvk_overrides(bottle: Bottle, *, dxvk_flavor: str, without_dxgi: bo
         _remove_user_reg_entries(
             bottle.prefix / "user.reg",
             r"Software\\Wine\\DllOverrides",
-            FOREIGN_RENDERER_OVERRIDES,
+            FOREIGN_RENDERER_OVERRIDES + tuple("*" + name for name in FOREIGN_RENDERER_OVERRIDES),
         )
     overrides = {name: "native" for name in _select_overrides(dxvk_flavor, without_dxgi)}
     _upsert_user_reg_section(
@@ -190,6 +192,13 @@ def install_dxvk(
     use_symlinks: bool = False,
     without_dxgi: bool = False,
 ) -> tuple[int, str]:
+    # The profile owns its renderer flavor. CLI launch defaults must never
+    # turn a verified macOS profile into an upstream DXVK installation.
+    manifest_path = bottle.root / "compatibility-profile.json"
+    if manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("profile", {}).get("id") == "dxvk-macos-pinned-v1":
+            dxvk_flavor = "macos"
     ensure_bottle_dirs(bottle)
     dxvk_root = resolve_dxvk_root(dxvk_source, bottle.cache / "dxvk")
     try:

@@ -12,3 +12,8 @@ AGENTS.md
 __pycache__/
 **/__pycache__/
 *.py[cod]
+
+# Local test and reverse-engineering artifacts
+*.profraw
+*.compact
+pakstore.json

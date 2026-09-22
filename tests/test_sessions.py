@@ -240,6 +240,73 @@ class LaunchSessionTests(unittest.TestCase):
             self.assertFalse(updated["steam_started_by_nase"])
             self.assertEqual(updated["steam_cleanup_status"], "user-owned")
 
+    def test_store_install_on_another_drive_is_tracked(self) -> None:
+        """Epic/GOG games live outside the prefix, so Wine maps them off C:."""
+        session = {
+            "executable": None,
+            "install_dir": "/Users/test/game-libraries/gog/Cool Game",
+            "prefix": str(self.bottle.prefix),
+            "pids": [],
+        }
+        processes = {10: r"Z:\Users\test\game-libraries\gog\Cool Game\cool.exe"}
+        self.assertEqual(sessions._matching_pids(session, processes, {10}), [10])
+
+    def test_lsof_timeout_does_not_escape_reconcile(self) -> None:
+        timeout = subprocess.TimeoutExpired(cmd="lsof", timeout=10)
+        with (
+            patch.object(sessions, "_registry_path", return_value=self.registry),
+            patch.object(sessions, "_processes", return_value={}),
+            patch.object(sessions.subprocess, "run", side_effect=timeout),
+        ):
+            session = sessions.create_session(
+                bottle=self.bottle,
+                appid="slow-lsof",
+                game="Slow Lsof Test",
+                executable=Path("/games/test.exe"),
+                install_dir=Path("/games"),
+                graphics_backend="dxmt",
+                strategy="direct",
+            )
+            reconciled = sessions.reconcile_sessions()
+            updated = next(item for item in reconciled if item["session_id"] == session["session_id"])
+            # A timed-out lsof degrades to name matching, it does not crash the
+            # poller that the UI depends on.
+            self.assertIn(updated["status"], {"launching", "exited"})
+
+    def test_unreadable_process_table_leaves_running_session_alone(self) -> None:
+        with (
+            patch.object(sessions, "_registry_path", return_value=self.registry),
+            patch.object(sessions, "_prefix_pids", return_value=set()),
+        ):
+            session = sessions.create_session(
+                bottle=self.bottle,
+                appid="ps-failure",
+                game="Process Table Test",
+                executable=Path("/games/test.exe"),
+                install_dir=Path("/games"),
+                graphics_backend="dxmt",
+                strategy="direct",
+            )
+            sessions.update_session(
+                session["session_id"],
+                status="running",
+                last_seen_at=time.time() - 600,
+                started_at=time.time() - 600,
+            )
+            with patch.object(sessions, "_processes", return_value=None):
+                reconciled = sessions.reconcile_sessions()
+            updated = next(item for item in reconciled if item["session_id"] == session["session_id"])
+            # A failed `ps` means "unknown", never "the game exited".
+            self.assertEqual(updated["status"], "running")
+
+    def test_process_table_timeout_reports_unknown(self) -> None:
+        with patch.object(
+            sessions.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(cmd="ps", timeout=5),
+        ):
+            self.assertIsNone(sessions._processes())
+
 
 if __name__ == "__main__":
     unittest.main()

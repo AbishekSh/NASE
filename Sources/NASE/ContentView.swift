@@ -330,26 +330,6 @@ struct ContentView: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
 
-            Button {
-                model.stopAllWineProcesses()
-            } label: {
-                Label("Stop All Wine Processes", systemImage: "stop.circle")
-                    .font(.system(size: 12, weight: .medium))
-                    .lineLimit(1)
-                    .foregroundStyle(theme.textSecondary)
-                    .padding(.horizontal, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .frame(height: 32)
-                    .background(theme.controlBackground)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(theme.controlBorder, lineWidth: 1)
-                    )
-            }
-            .buttonStyle(.plain)
-            .disabled(model.hasActiveBackendWork && model.currentOperationJob?.action == "Kill Wine")
-            .help("Emergency stop for Wine and game processes across every NASE bottle")
         }
         .padding(12)
         .background(theme.sidebarBackground)

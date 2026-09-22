@@ -5,6 +5,14 @@ import AppKit
 struct NASEApp: App {
     @State private var model = AppViewModel()
 
+    init() {
+        // Runs before any window is shown, so the diagnostic can print and exit
+        // without flashing the UI.
+        if CommandLine.arguments.contains(KeyboardRemapDiagnostics.flag) {
+            KeyboardRemapDiagnostics.runAndExit()
+        }
+    }
+
     var body: some Scene {
         WindowGroup("NASE") {
             ContentView(model: model)
@@ -18,6 +26,15 @@ struct NASEApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1420, height: 900)
+        .commands {
+            CommandGroup(replacing: .help) {
+                Menu("Troubleshooting") {
+                    Button("Stop All Windows Apps…") {
+                        model.stopAllWineProcesses()
+                    }
+                }
+            }
+        }
     }
 
     private func activateApplication() {

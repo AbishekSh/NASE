@@ -23,6 +23,7 @@ PINNED_MOLTENVK_PAYLOADS = {
     "e9de8aa6053e1347c82aff01c6d7964556f306b2f7c63db88eb54a05e4f8b980": "CodeWeavers 1.4.1",
 }
 PROBE_SHA256 = "4e5e75469dccfe63eabced92b00d05cdb265ab822154988fdabc1b1b4462081a"
+DXVK_MACOS_DLL_OVERRIDES = "d3d11=n;d3d10core=n;dxgi=b;d3d9=b;d3d12=b;winemetal=b"
 
 
 def discover_moltenvk_source(wine_path: Path | None = None) -> Path | None:
@@ -193,6 +194,8 @@ def dxvk_macos_launch_environment(bottle: Bottle) -> dict[str, str]:
     if existing:
         fallback += ":" + existing
     return {
+        # Explicit builtins also neutralize stale native registry overrides.
+        "WINEDLLOVERRIDES": DXVK_MACOS_DLL_OVERRIDES,
         "DYLD_FALLBACK_LIBRARY_PATH": fallback,
         "MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS": "0",
         "MVK_CONFIG_LOG_LEVEL": "1",
@@ -218,8 +221,12 @@ def verify_dxvk_macos_profile(bottle: Bottle) -> list[dict[str, str]]:
     user_reg = bottle.prefix / "user.reg"
     registry = user_reg.read_text(encoding="utf-8", errors="replace") if user_reg.is_file() else ""
     required = ('"d3d10core"="native"', '"d3d11"="native"')
-    conflicts = ('"dxgi"="native"', '"winemetal"="native"', '"d3d12"="native"')
-    overrides_ok = all(value in registry for value in required) and not any(value in registry for value in conflicts)
+    conflicts = re.search(
+        r'^"\*?(?:dxgi|d3d9|winemetal|d3d12)"="(?:native|n)(?:,[^"]*)?"',
+        registry,
+        flags=re.MULTILINE,
+    )
+    overrides_ok = all(value in registry for value in required) and conflicts is None
     checks.append({
         "name": "renderer-overrides",
         "status": "ok" if overrides_ok else "error",
@@ -263,7 +270,6 @@ def probe_dxvk_macos_graphics(*, bottle: Bottle, wine_path: Path) -> tuple[int, 
     environment = {
         "WINEPREFIX": str(bottle.prefix),
         "WINEDEBUG": "-all",
-        "WINEDLLOVERRIDES": "d3d11=n;d3d10core=n",
         "DXVK_LOG_LEVEL": "info",
         **dxvk_macos_launch_environment(bottle),
     }
