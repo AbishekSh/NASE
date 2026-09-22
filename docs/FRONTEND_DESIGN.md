@@ -18,10 +18,10 @@ Backend paths, bottle names, renderer versions, and raw commands remain availabl
 - **Game actions** belong on the game card or in its overflow menu.
 - **Source actions** such as Refresh, Open Steam, Epic Setup, and GOG Setup belong in the library header.
 - **Add actions** belong in the library header for macOS and Wine sources.
-- **Global status and emergency recovery** belong in the persistent sidebar command center.
+- **Global status** belongs in the persistent sidebar command center. Broad recovery belongs in Help → Troubleshooting.
 - **Configuration and advanced repair** belong in Settings.
 
-The emergency **Stop Wine Processes** action remains visible from every library. It targets the selected bottle or prefix and should not require navigating through Settings.
+**Stop All Windows Apps…** lives in Help → Troubleshooting and requires confirmation before closing Windows games, apps, and Steam across NASE bottles and the selected imported environment. Per-game Stop is the everyday control; when a game does not exit, NASE offers an explicit Force Quit choice for that session.
 
 ## Game cards
 

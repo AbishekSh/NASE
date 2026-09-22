@@ -20,6 +20,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     case general = "General"
     case accounts = "Accounts"
     case compatibility = "Compatibility"
+    case input = "Input"
     case runtimes = "Runtimes"
     case jobs = "Jobs"
     case advanced = "Advanced"
@@ -31,6 +32,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .general: return "gearshape"
         case .accounts: return "person.crop.circle"
         case .compatibility: return "checkmark.shield"
+        case .input: return "keyboard"
         case .runtimes: return "shippingbox"
         case .jobs: return "clock.arrow.circlepath"
         case .advanced: return "wrench.and.screwdriver"
@@ -45,6 +47,8 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
             return "Shared sign-in and account controls"
         case .compatibility:
             return "System readiness and graphics profiles"
+        case .input:
+            return "Keyboard remapping for Windows games"
         case .runtimes:
             return "Install and manage Wine engines"
         case .jobs:
@@ -241,9 +245,9 @@ struct SettingsSheet: View {
     private var settingsOperationCards: [OperationCard] {
         model.operationCards.filter { operation in
             switch operation.kind {
-            case .installDXMT, .installD3DMetal, .openSteam, .refreshGames, .launchSelectedGame:
+            case .installDXMT, .installD3DMetal, .openSteam, .refreshGames, .launchSelectedGame, .killWine:
                 return false
-            case .setupMetal, .doctor, .doctorFix, .winetricks, .winecfg, .killWine:
+            case .setupMetal, .doctor, .doctorFix, .winetricks, .winecfg:
                 return true
             }
         }
@@ -342,6 +346,8 @@ struct SettingsSheet: View {
         case .compatibility:
             settingsDependencyPanel
             settingsCompatibilityProfilesPanel
+        case .input:
+            settingsKeyboardRemapPanel
         case .runtimes:
             settingsRuntimeCenterPanel
         case .jobs:
@@ -648,6 +654,12 @@ struct SettingsSheet: View {
                 .foregroundStyle(themeMutedForeground)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var settingsKeyboardRemapPanel: some View {
+        settingsSection("Keyboard Remapping") {
+            KeyboardRemapControls(service: model.keyboardRemap)
         }
     }
 
@@ -1559,4 +1571,208 @@ struct SettingsSheet: View {
     private var themePanelRaised: Color { colorScheme == .dark ? Color(hex: "#353D38") : Color(hex: "#DEE8DE") }
     private var themeForeground: Color { colorScheme == .dark ? Color(hex: "#D4DBD4") : Color(hex: "#162019") }
     private var themeMutedForeground: Color { colorScheme == .dark ? Color(hex: "#AEB7AF") : Color(hex: "#55635A") }
+}
+
+
+/// Split out of `SettingsSheet` because these controls bind to the remap
+/// service's own state rather than the view model's.
+private struct KeyboardRemapControls: View {
+    @Bindable var service: KeyboardRemapService
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var isEditingNewLayout = false
+    @State private var editingLayout: KeyboardLayout?
+
+    private var mutedForeground: Color {
+        colorScheme == .dark ? Color(hex: "#AEB7AF") : Color(hex: "#55635A")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Rewrite keys for Windows games launched by NASE. The remap is applied before Wine sees the key, so it reaches the game whether it reads DirectInput, Raw Input, or window messages.")
+                .font(.subheadline)
+                .foregroundStyle(mutedForeground)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if service.needsRelaunchToApplyPermission {
+                relaunchRequest
+            } else if !service.permission.isGranted {
+                permissionRequest
+            }
+
+            Toggle("Remap keys in NASE games", isOn: $service.isEnabled)
+                .disabled(!service.permission.isGranted)
+
+            Text("This is the master switch only \u{2014} turning it on does not remap anything by itself. Each game picks its own layout in that game's \u{22EF} menu \u{2192} Settings \u{2192} Keyboard. The layouts below are the library to choose from, not a selection.")
+                .font(.caption)
+                .foregroundStyle(mutedForeground)
+                .fixedSize(horizontal: false, vertical: true)
+
+            layoutLibrary
+
+            Divider()
+            statusRow
+
+            Text("Press \u{2303}\u{2325}\u{2318}K at any time to turn remapping off. Command combinations such as \u{2318}Q and \u{2318}Tab are never remapped, and remapping stops on its own when the game exits or NASE quits.")
+                .font(.caption)
+                .foregroundStyle(mutedForeground)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Shown when the switch is on in System Settings but this session cannot
+    /// use it, which is the one case a Re-check can never resolve.
+    private var relaunchRequest: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("macOS refused NASE a keyboard event tap, so remapping cannot run yet. There are three reasons this happens, and the message cannot tell which:")
+                .font(.caption)
+                .foregroundStyle(mutedForeground)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("• This session started before access was granted. macOS only applies Accessibility when an app starts, so reopen NASE.\n• The enabled entry is a different build. Access is granted per executable, and the file below is the one that counts.\n• NASE was launched by Xcode. A debugged app is attributed to Xcode, so Xcode itself must also be enabled in the Accessibility list.")
+                .font(.caption)
+                .foregroundStyle(mutedForeground)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 10) {
+                Button("Quit NASE") { service.quitForRelaunch() }
+                    .buttonStyle(.borderedProminent)
+                Button("Re-check") { service.refreshPermission() }
+            }
+            grantedBinaryHint
+        }
+    }
+
+    private var permissionRequest: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("macOS requires Accessibility access to modify key events. NASE only rewrites keys while a game it launched is the frontmost window; every other keystroke passes through untouched.")
+                .font(.caption)
+                .foregroundStyle(mutedForeground)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 10) {
+                Button("Grant Accessibility Access\u{2026}") { service.requestPermission() }
+                    .buttonStyle(.borderedProminent)
+                Button("Open System Settings") { service.openAccessibilitySettings() }
+                Button("Re-check") { service.refreshPermission() }
+            }
+            grantedBinaryHint
+        }
+    }
+
+    /// macOS matches an unsigned build by path and lists every copy as just
+    /// "NASE", so the only way to be sure the right one is enabled is to name
+    /// it. A project easily has three: SwiftPM's `.build` copy, Xcode's
+    /// DerivedData copy, and a packaged NASE.app.
+    @ViewBuilder
+    private var grantedBinaryHint: some View {
+        if service.isUnbundledDevelopmentBuild {
+            VStack(alignment: .leading, spacing: 6) {
+                Divider()
+                Text("This is a development build, and macOS grants access per executable. The file that must be enabled is:")
+                    .font(.caption)
+                    .foregroundStyle(mutedForeground)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(service.executablePathForPermissions)
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Reveal in Finder") { service.revealExecutableInFinder() }
+                Text("Running from Xcode and running from the terminal build to different paths, so each needs its own entry. Add this one with + in the Accessibility list, or drag it in from Finder. When running under Xcode, enable Xcode there too.")
+                    .font(.caption)
+                    .foregroundStyle(mutedForeground)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var layoutLibrary: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Layouts")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Button {
+                    editingLayout = nil
+                    isEditingNewLayout = true
+                } label: {
+                    Label("New Layout", systemImage: "plus")
+                }
+                .disabled(isEditingNewLayout || editingLayout != nil)
+            }
+
+            if let warning = service.layoutWarning {
+                Text(warning)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Text(KeyboardLayout.directionLegend)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(mutedForeground)
+
+            ForEach(service.availableLayouts) { layout in
+                HStack(alignment: .top, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(layout.name)
+                                .font(.caption.weight(.medium))
+                            if layout.isBuiltIn {
+                                Text("Built-in")
+                                    .font(.caption2)
+                                    .foregroundStyle(mutedForeground)
+                            }
+                        }
+                        Text(layout.summary)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(mutedForeground)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                    if !layout.isBuiltIn {
+                        Button("Edit") {
+                            isEditingNewLayout = false
+                            editingLayout = layout
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(isEditingNewLayout || editingLayout != nil)
+                        Button("Delete", role: .destructive) {
+                            service.deleteLayout(id: layout.id)
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+            }
+
+            if isEditingNewLayout || editingLayout != nil {
+                KeyboardLayoutEditor(
+                    service: service,
+                    existing: editingLayout,
+                    onFinish: {
+                        isEditingNewLayout = false
+                        editingLayout = nil
+                    }
+                )
+                // Rebuild the editor when the target changes so its captured
+                // state cannot leak from one layout into another.
+                .id(editingLayout?.id ?? "new")
+            }
+        }
+    }
+
+    private var statusRow: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: service.isApplyingToFocusedGame ? "checkmark.circle.fill" : "info.circle")
+                .foregroundStyle(service.isApplyingToFocusedGame ? Color.green : mutedForeground)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(service.statusSummary)
+                    .font(.subheadline.weight(.medium))
+                Text("\(service.activeGamePIDCount) game process(es) tracked")
+                    .font(.caption)
+                    .foregroundStyle(mutedForeground)
+                if service.disableCount > 0 {
+                    Text("macOS disabled and NASE re-enabled the key tap \(service.disableCount) time(s).")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+        }
+    }
 }

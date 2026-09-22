@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 from typing import Any, Callable, Iterator
 
 from ..bottle import app_support_root
-from .base import SourceGame, SourceStatus
+from .base import InstalledGame, SourceGame, SourceStatus
 
 
 CommandRunner = Callable[[list[str], dict[str, str], int], subprocess.CompletedProcess[str]]
@@ -164,6 +164,29 @@ class EpicSource:
             self._run(["list-installed", "--json", "--show-dirs"], timeout=120)
         )
         return normalize_epic_games(owned_payload, installed_payload)
+
+    def installed_game(self, game_id: str) -> InstalledGame | None:
+        """Resolve local install facts from Legendary's installed list only.
+
+        This deliberately skips the owned-catalog call, which is slow and needs
+        the network; launch tracking only needs the title and install path.
+        """
+        try:
+            app_name = _game_id(game_id)
+            payload = self._json_output(self._run(["list-installed", "--json", "--show-dirs"], timeout=120))
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+            return None
+        for item in _items(payload):
+            if str(_value(item, "app_name", "appName", "app", "id") or "") != app_name:
+                continue
+            install_path = _value(item, "install_path", "installPath", "path")
+            executable = _value(item, "executable", "launch_exe", "launchExe")
+            return InstalledGame(
+                title=str(_value(item, "app_title", "title", "name") or app_name),
+                install_path=str(install_path) if install_path else None,
+                executable=str(executable) if executable else None,
+            )
+        return None
 
     def authenticate(self, *, authorization_code: str) -> SourceStatus:
         code = authorization_code.strip()

@@ -412,13 +412,13 @@ struct GameCard: View {
 
     private var primaryActionSymbol: String {
         if canStop { return "stop.fill" }
-        if [.epic, .gog].contains(game.runner), game.installURL == nil { return "arrow.down" }
+        if [.epic, .gog, .steam].contains(game.runner), game.installURL == nil { return "arrow.down" }
         return "play.fill"
     }
 
     private var primaryActionHelp: String {
         if canStop { return "Stop \(game.title)" }
-        if [.epic, .gog].contains(game.runner), game.installURL == nil { return "Install \(game.title)" }
+        if [.epic, .gog, .steam].contains(game.runner), game.installURL == nil { return "Install \(game.title)" }
         return "Play \(game.title)"
     }
 

@@ -22,6 +22,9 @@ struct BackendGame: Identifiable, Hashable {
     let appid: String
     let name: String
     let installDir: String?
+    /// False for games the account owns but has not downloaded. Defaults to
+    /// true so an older backend that omits the field still reads as installed.
+    var installed: Bool = true
 }
 
 struct BackendResponse {
@@ -229,6 +232,7 @@ private struct BackendJSONGame: Decodable {
     let appid: String
     let name: String
     let install_dir: String?
+    let installed: Bool?
 }
 
 private struct BackendJSONCheck: Decodable {
@@ -504,13 +508,14 @@ enum BackendAction {
     case openWinecfg
     case killWine
     case listSessions
-    case stopGame(sessionID: String)
+    case stopGame(sessionID: String, force: Bool = false)
     case openSteam
     case listGames
     case listRuntimeCatalog
     case listInstalledRuntimes
     case installRuntime(id: String)
     case launchGame(appid: String)
+    case installSteamGame(appid: String, graphicsBackend: GraphicsBackendOption = .dxmt)
     case smartLaunchGame(appid: String, graphicsBackend: GraphicsBackendOption = .dxmt)
     case debugGame(
         appid: String,
@@ -793,8 +798,8 @@ enum BackendBridge {
             return base + ["kill-wine", "--all-managed"]
         case .listSessions:
             return context.targetArguments + ["--json", "list-sessions"]
-        case .stopGame(let sessionID):
-            return base + ["stop-game", "--session-id", sessionID]
+        case .stopGame(let sessionID, let force):
+            return base + ["stop-game", "--session-id", sessionID] + (force ? ["--force"] : [])
         case .openSteam:
             return base + ["run-steam", "--no-wait"]
         case .listGames:
@@ -807,6 +812,17 @@ enum BackendBridge {
             return base + ["install-runtime", "--runtime", id, "--no-bottle-install"]
         case .launchGame(let appid):
             return base + ["--graphics-backend", GraphicsBackendOption.dxmt.cliValue, "--compatibility-profile", GraphicsBackendOption.dxmt.compatibilityProfileID, "launch-game", "--appid", appid, "--dxmt-source", context.dxmtSource, "--no-wait"]
+        case .installSteamGame(let appid, let graphicsBackend):
+            var args = base
+            args += [
+                "--graphics-backend", graphicsBackend.cliValue,
+                "--compatibility-profile", graphicsBackend.compatibilityProfileID,
+                "install-steam-game", "--appid", appid,
+            ]
+            if graphicsBackend == .d3dmetal {
+                args += ["--d3dmetal-source", context.d3dMetalSource]
+            }
+            return args
         case .smartLaunchGame(let appid, let graphicsBackend):
             var args = base
             args += ["--graphics-backend", graphicsBackend.cliValue, "--compatibility-profile", graphicsBackend.compatibilityProfileID, "smart-launch-game", "--appid", appid, "--no-wait"]
@@ -1014,7 +1030,13 @@ enum BackendBridge {
 
     private static func makeResponse(from payload: BackendJSONResponse) -> BackendResponse {
         let games = payload.data?.games?.map {
-            BackendGame(id: $0.appid, appid: $0.appid, name: $0.name, installDir: $0.install_dir)
+            BackendGame(
+                id: $0.appid,
+                appid: $0.appid,
+                name: $0.name,
+                installDir: ($0.install_dir?.isEmpty == false) ? $0.install_dir : nil,
+                installed: $0.installed ?? true
+            )
         } ?? []
         var runtimes = payload.data?.runtimes?.map { makeRuntime(from: $0) } ?? []
         if let runtime = payload.data?.runtime {

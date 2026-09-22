@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
 from ..bottle import app_support_root
-from .base import SourceGame, SourceStatus
+from .base import InstalledGame, SourceGame, SourceStatus
 
 
 CommandRunner = Callable[[list[str], dict[str, str], int], subprocess.CompletedProcess[str]]
@@ -231,6 +231,18 @@ class GOGSource:
         installed = self._installed()
         installed[game_id] = {"install_path": str(destination), "version": str(info.get("versionName") or info.get("buildId") or "")}
         self._write_installed(installed)
+
+    def installed_game(self, game_id: str) -> InstalledGame | None:
+        """Resolve local install facts from the NASE registry, without network."""
+        try:
+            game_id, local = self._installed_game(game_id)
+        except (RuntimeError, ValueError):
+            return None
+        install_path = Path(local.get("install_path", ""))
+        return InstalledGame(
+            title=local.get("title") or install_path.name or game_id,
+            install_path=str(install_path),
+        )
 
     def _installed_game(self, game_id: str) -> tuple[str, dict[str, str]]:
         game_id = _game_id(game_id)

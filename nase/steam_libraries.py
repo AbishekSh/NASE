@@ -206,8 +206,8 @@ def refresh_registry(current: Bottle) -> dict[str, Any]:
     return registry
 
 
-def installed_games(registry: dict[str, Any]) -> list[dict[str, str]]:
-    games: list[dict[str, str]] = []
+def installed_games(registry: dict[str, Any]) -> list[dict[str, Any]]:
+    games: list[dict[str, Any]] = []
     for app in registry.get("apps", []):
         preferred = app.get("preferred_location", {})
         if preferred.get("state") != "installed":
@@ -218,6 +218,10 @@ def installed_games(registry: dict[str, Any]) -> list[dict[str, str]]:
                 "name": str(app.get("name") or app.get("appid") or "Unknown"),
                 "install_dir": str(preferred.get("install_dir") or ""),
                 "library_id": str(preferred.get("library_id") or ""),
+                # Owned-but-not-installed games are merged into the same list by
+                # the CLI, so installed state must be explicit rather than
+                # implied by an entry's presence.
+                "installed": True,
             }
         )
     return games

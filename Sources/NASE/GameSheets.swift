@@ -31,6 +31,7 @@ struct GameSettingsSheet: View {
     @State private var assignedExternalPrefix: String = ""
     @State private var legacyDirectXEnabled: Bool = false
     @State private var legacyDirectXSource: String = ""
+    @State private var keyboardLayoutID: String = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -86,6 +87,46 @@ struct GameSettingsSheet: View {
                             }
                         }
                     }
+                    settingsSection("Keyboard", subtitle: "Rewrite keys for this game only, applied before Wine sees them.") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Picker("Layout", selection: $keyboardLayoutID) {
+                                Text("Off").tag("")
+                                ForEach(model.keyboardRemap.availableLayouts) { layout in
+                                    Text(layout.name).tag(layout.id)
+                                }
+                            }
+                            .pickerStyle(.menu)
+
+                            if let layout = model.keyboardRemap.layout(id: keyboardLayoutID) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(KeyboardLayout.directionLegend)
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                    Text(layout.summary)
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+
+                            if !keyboardLayoutID.isEmpty, !model.keyboardRemap.isReadyToRemap {
+                                HStack(alignment: .top, spacing: 6) {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .foregroundStyle(.orange)
+                                    Text(model.keyboardRemap.statusSummary + " Open Settings → Input to finish enabling it.")
+                                        .font(.caption)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+
+                            Text("Remapping applies only while this game's window is frontmost. Press \u{2303}\u{2325}\u{2318}K to turn it off at any time.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
                     settingsSection("Appearance", subtitle: "Swap in your own banner art for the library card.") {
                         labeledField("Custom Banner", text: $customBannerPath, browse: pickImage)
                     }
@@ -133,19 +174,30 @@ struct GameSettingsSheet: View {
                         }
                         .pickerStyle(.segmented)
 
+                        let profileReady = model.compatibilityProfileIsReady(graphicsBackend, bottleName: assignedBottleName)
+                        let preparing = model.isPreparingCompatibilityProfile(graphicsBackend)
                         HStack(alignment: .top, spacing: 8) {
-                            Image(systemName: graphicsBackend == .dxvk ? "exclamationmark.triangle.fill" : "checkmark.shield.fill")
-                                .foregroundStyle(graphicsBackend == .dxvk ? .orange : .green)
+                            Image(systemName: profileReady ? "checkmark.shield.fill" : "arrow.down.circle")
+                                .foregroundStyle(profileReady ? .green : .secondary)
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(graphicsBackend.profileSummary)
+                                Text(graphicsBackend == .dxvk ? (preparing ? "Setting up DXVK…" : (profileReady ? "DXVK is set up" : "Set up DXVK")) : graphicsBackend.profileSummary)
                                     .font(.subheadline.weight(.semibold))
+                                    .help(graphicsBackend.profileSummary)
                                 Text("Uses dedicated bottle: \(profileBottleName)")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                 if graphicsBackend == .dxvk {
-                                    Text("Unavailable until the complete matched Vulkan stack is installed.")
+                                    Text(profileReady ? "Vulkan support is included." : "NASE downloads Vulkan support and the matching components for you.")
                                         .font(.caption)
-                                        .foregroundStyle(.orange)
+                                        .foregroundStyle(.secondary)
+                                    if preparing {
+                                        ProgressView().controlSize(.small)
+                                    } else if !profileReady {
+                                        Button(model.compatibilityProfileExists(.dxvk, bottleName: assignedBottleName) ? "Repair DXVK" : "Set Up DXVK") {
+                                            model.setupCompatibilityProfile(.dxvk, bottleName: assignedBottleName)
+                                        }
+                                        .disabled(model.hasActiveBackendWork || model.backendPreflightState != .ready)
+                                    }
                                 }
                                 if detectedArchitecture == "32-bit x86 (WoW64)" {
                                     Text("32-bit application detected. Wine will use WoW64.")
@@ -273,7 +325,8 @@ struct GameSettingsSheet: View {
                         assignedBottleName: assignedBottleName,
                         assignedExternalPrefix: assignedExternalPrefix,
                         legacyDirectXEnabled: legacyDirectXEnabled,
-                        legacyDirectXSource: legacyDirectXSource
+                        legacyDirectXSource: legacyDirectXSource,
+                        keyboardLayoutID: keyboardLayoutID
                     )
                     model.closeGameSettings()
                 }
@@ -302,12 +355,13 @@ struct GameSettingsSheet: View {
             assignedExternalPrefix = settings.assignedExternalPrefix
             legacyDirectXEnabled = settings.legacyDirectXEnabled == true
             legacyDirectXSource = settings.legacyDirectXSource ?? ""
+            keyboardLayoutID = settings.keyboardLayoutID ?? ""
         }
     }
 
     private var profileBottleName: String {
-        let base = assignedBottleName.trimmingCharacters(in: .whitespacesAndNewlines)
-        return "\(base.isEmpty ? model.backendContext.bottleName : base)-\(graphicsBackend.bottleSuffix)"
+        model.backendContext.overridingTarget(bottleName: assignedBottleName, externalPrefix: nil)
+            .compatibilityContext(for: graphicsBackend).bottleName
     }
 
     private func labeledField(_ title: String, text: Binding<String>, browse: (() -> String?)? = nil) -> some View {

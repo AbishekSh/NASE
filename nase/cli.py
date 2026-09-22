@@ -47,6 +47,7 @@ from .steam import (
     ensure_shared_steam,
     graphics_launch_environment,
     guess_game_executable,
+    install_app,
     install_steam,
     kill_nase_wine_processes,
     kill_wine_processes,
@@ -55,12 +56,14 @@ from .steam import (
     promote_to_shared_steam,
     run_game_executable,
     steam_client_is_ready,
+    steam_core_root,
     steam_prefix_root,
     validate_executable_compatibility,
     run_steam,
     steam_windows_path,
 )
 from .steam_libraries import attach_registered_libraries, installed_games, refresh_registry, resolve_registered_app
+from .steam_ownership import owned_games
 from .steam_identity import (
     capture_steam_identity,
     forget_steam_identity,
@@ -1208,7 +1211,30 @@ def cmd_kill_wine(args: argparse.Namespace) -> None:
 
 
 def cmd_list_sessions(args: argparse.Namespace) -> None:
-    sessions = reconcile_sessions()
+    # The UI polls this command continuously to decide whether a game is still
+    # running. An unexpected failure here must stay a structured result: a
+    # traceback plus a non-zero exit is invisible to the app and freezes every
+    # card on its last known status.
+    try:
+        sessions = reconcile_sessions()
+    except Exception as exc:  # noqa: BLE001 - the poller must never see a traceback
+        message = f"Launch sessions could not be reconciled: {exc}"
+        if _stream_enabled(args):
+            _stream_result(
+                action="list-sessions",
+                job_id=_stream_start(action="list-sessions", message="Reconciling launch sessions..."),
+                ok=False,
+                status="failed",
+                message=message,
+                errors=[str(exc)],
+                data={"sessions": []},
+            )
+            return
+        if _json_enabled(args):
+            _emit_json(action="list-sessions", ok=False, message=message, data={"sessions": []}, status="failed")
+            return
+        print(message)
+        return
     active_only = not getattr(args, "all", False)
     if active_only:
         sessions = [session for session in sessions if session.get("status") in {"launching", "running", "stopping"}]
@@ -1444,7 +1470,7 @@ def cmd_launch_source_game(args: argparse.Namespace) -> None:
     bottle = _resolve_bottle(args)
     wine_path = _require_wine64(args)
     graphics_backend = _resolved_graphics_backend(args, for_steam=False)
-    _bind_launch_profile(args, action=action, bottle=bottle, wine_path=wine_path, graphics_backend=graphics_backend)
+    profile_id = _bind_launch_profile(args, action=action, bottle=bottle, wine_path=wine_path, graphics_backend=graphics_backend)
     graphics_source_value = {
         "dxmt": args.dxmt_source,
         "dxvk": args.dxvk_source,
@@ -1453,23 +1479,55 @@ def cmd_launch_source_game(args: argparse.Namespace) -> None:
     }[graphics_backend]
     source_name = "Epic" if args.source == "epic" else "GOG"
     job_id = _stream_start(action=action, message=f"Preparing {source_name} launch for {args.game_id}...") if _stream_enabled(args) else None
+    source = _game_source(args)
+    # Store launches are tracked exactly like Steam and Wine launches. Without a
+    # session record the UI has nothing that can ever contradict "Running", so
+    # the card stays lit after the game exits.
+    # Resolving local install facts is best effort: a session with only a title
+    # still tracks better than no session, and it must never block the launch.
+    try:
+        local = source.installed_game(args.game_id)
+    except Exception:  # noqa: BLE001 - launching matters more than tracking metadata
+        local = None
+    launch_session = create_session(
+        bottle=bottle,
+        appid=f"{args.source}:{args.game_id}",
+        game=(local.title if local else args.game_id),
+        executable=Path(local.executable) if local and local.executable else None,
+        install_dir=Path(local.install_path) if local and local.install_path else None,
+        graphics_backend=graphics_backend,
+        strategy="store",
+        profile_id=profile_id,
+        wine_path=wine_path,
+    )
     try:
         environment = graphics_launch_environment(
             bottle,
             graphics_backend,
             Path(graphics_source_value) if graphics_source_value else None,
         )
-        _game_source(args).launch(
+        source.launch(
             args.game_id,
             wine_path=wine_path,
             wine_prefix=bottle.prefix,
             environment=environment,
         )
     except (OSError, RuntimeError, ValueError) as exc:
+        update_session(launch_session["session_id"], status="failed", message=f"{source_name} launch failed.")
         if job_id:
             _stream_result(action=action, job_id=job_id, ok=False, status="failed", message=str(exc), errors=[str(exc)])
             raise SystemExit(1)
         _json_error(args, action=action, message=str(exc))
+    launch_session = next(
+        (item for item in reconcile_sessions() if item.get("session_id") == launch_session["session_id"]),
+        launch_session,
+    )
+    data = {
+        "source_id": args.source,
+        "game_id": args.game_id,
+        "graphics_backend": graphics_backend,
+        "session": launch_session,
+    }
     if job_id:
         _stream_result(
             action=action,
@@ -1477,20 +1535,20 @@ def cmd_launch_source_game(args: argparse.Namespace) -> None:
             ok=True,
             status="completed",
             message=f"{source_name} launch request sent for {args.game_id}.",
-            data={"source_id": args.source, "game_id": args.game_id, "graphics_backend": graphics_backend},
+            data=data,
         )
         return
     _identity_result(
         args,
         action=action,
         message=f"{source_name} launch request sent for {args.game_id}.",
-        data={"source_id": args.source, "game_id": args.game_id, "graphics_backend": graphics_backend},
+        data=data,
     )
 
 
 def cmd_stop_game(args: argparse.Namespace) -> None:
     job_id = _stream_start(action="stop-game", message="Stopping game...") if _stream_enabled(args) else None
-    session, pids = stop_session(args.session_id)
+    session, pids = stop_session(args.session_id, force=getattr(args, "force", False))
     if session is None:
         _json_error(args, action="stop-game", message=f"Unknown launch session: {args.session_id}")
     message = session.get("message") or "Game stopped."
@@ -1931,14 +1989,35 @@ def cmd_list_games(args: argparse.Namespace) -> None:
     job_id = _stream_start(action="list-games", message="Scanning registered Steam libraries...") if _stream_enabled(args) else None
     registry = refresh_registry(bottle)
     games = installed_games(registry)
+    installed_count = len(games)
+    # Steam only writes a manifest for games it has downloaded. Everything else
+    # the account owns comes from the client's own package/app caches, so the
+    # library can match Epic and GOG instead of showing installs only.
+    owned, ownership_warnings = owned_games(steam_core_root())
+    known_appids = {game["appid"] for game in games}
+    games.extend(
+        {"appid": game.appid, "name": game.name, "install_dir": "", "library_id": "", "installed": False}
+        for game in owned
+        if game.appid not in known_appids
+    )
+    owned_count = len(games) - installed_count
     data = {
         "target": _target_label(args, bottle),
         "registry_path": str(app_support_root() / "steam-libraries.json"),
         "library_count": len(registry["libraries"]),
         "libraries": registry["libraries"],
         "games": games,
+        "installed_count": installed_count,
+        "owned_count": owned_count,
     }
-    message = f"Found {len(games)} installed Steam game(s) across {len(registry['libraries'])} library location(s)." if games else "No installed Steam games were found in registered libraries."
+    warnings = list(registry["warnings"]) + ownership_warnings
+    if games:
+        message = (
+            f"Found {installed_count} installed Steam game(s) across "
+            f"{len(registry['libraries'])} library location(s), plus {owned_count} owned game(s) not installed."
+        )
+    else:
+        message = "No installed or owned Steam games were found."
     if _stream_enabled(args):
         _stream_result(
             action="list-games",
@@ -1947,7 +2026,7 @@ def cmd_list_games(args: argparse.Namespace) -> None:
             status="completed",
             message=message,
             data=data,
-            warnings=registry["warnings"],
+            warnings=warnings,
         )
         return
     if _json_enabled(args):
@@ -1956,7 +2035,7 @@ def cmd_list_games(args: argparse.Namespace) -> None:
             ok=True,
             message=message,
             data=data,
-            warnings=registry["warnings"],
+            warnings=warnings,
             status="completed",
         )
         return
@@ -1964,7 +2043,7 @@ def cmd_list_games(args: argparse.Namespace) -> None:
         print(message)
         return
     for game in games:
-        print(f"{game['appid']}\t{game['name']}\t{game['install_dir']}")
+        print(f"{game['appid']}\t{game['name']}\t{game['install_dir'] or '(owned, not installed)'}")
 
 
 def cmd_doctor(args: argparse.Namespace) -> None:
@@ -2215,6 +2294,54 @@ def cmd_launch_game(args: argparse.Namespace) -> None:
             )
         else:
             print("Launch request sent.")
+
+
+def cmd_install_steam_game(args: argparse.Namespace) -> None:
+    """Open Windows Steam on the install prompt for an owned AppID."""
+    action = "install-steam-game"
+    wine64 = _require_wine64(args)
+    bottle = _resolve_bottle(args)
+    graphics_backend = _resolved_graphics_backend(args, for_steam=True)
+    _bind_launch_profile(args, action=action, bottle=bottle, wine_path=wine64, graphics_backend=graphics_backend)
+    job_id = _stream_start(action=action, message=f"Asking Steam to install {args.appid}...") if _stream_enabled(args) else None
+    code, tail = install_app(
+        bottle=bottle,
+        wine64_path=wine64,
+        appid=args.appid,
+        graphics_backend=graphics_backend,
+        wait=False,
+        graphics_source=Path(args.d3dmetal_source) if graphics_backend == "d3dmetal" and args.d3dmetal_source else None,
+    )
+    data = {"appid": args.appid, "tail": tail}
+    if code != 0:
+        message = f"Steam could not be opened for install (exit {code}). Tail:\n{tail}"
+        if _stream_enabled(args):
+            _stream_result(
+                action=action,
+                job_id=job_id or uuid.uuid4().hex,
+                ok=False,
+                status="failed",
+                message=message,
+                data=data,
+                errors=[f"Steam install request failed (exit {code})."],
+            )
+            raise SystemExit(code)
+        _json_error(args, action=action, message=message, code=code)
+    message = f"Steam is showing the install prompt for {args.appid}."
+    if _stream_enabled(args):
+        _stream_result(
+            action=action,
+            job_id=job_id or uuid.uuid4().hex,
+            ok=True,
+            status="completed",
+            message=message,
+            data=data,
+        )
+        return
+    if _json_enabled(args):
+        _emit_json(action=action, ok=True, message=message, data=data, status="completed")
+        return
+    print(message)
 
 
 def cmd_smart_launch_game(args: argparse.Namespace) -> None:
@@ -3046,6 +3173,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     stop_game_cmd = sub.add_parser("stop-game", help="Stop one tracked game session without stopping shared Steam")
     stop_game_cmd.add_argument("--session-id", required=True, help="Launch session id returned by a game launch")
+    stop_game_cmd.add_argument("--force", action="store_true", help="Force quit only the matching game processes")
     stop_game_cmd.set_defaults(func=cmd_stop_game)
 
     dxvk_cmd = sub.add_parser("install-dxvk", help="Install DXVK into the bottle from a local folder or tar.gz")
@@ -3143,6 +3271,14 @@ def build_parser() -> argparse.ArgumentParser:
     launch_cmd.add_argument("--d3dmetal-source", help="Optional D3DMetal directory or tar.gz archive to restore D3DMetal before launch")
     launch_cmd.add_argument("--no-wait", action="store_true", help="Return immediately after sending the launch request")
     launch_cmd.set_defaults(func=cmd_launch_game)
+
+    install_steam_game_cmd = sub.add_parser(
+        "install-steam-game",
+        help="Open Windows Steam on the install prompt for an owned AppID",
+    )
+    install_steam_game_cmd.add_argument("--appid", required=True, help="Steam AppID")
+    install_steam_game_cmd.add_argument("--d3dmetal-source", help="Optional D3DMetal directory or tar.gz archive for the selected profile")
+    install_steam_game_cmd.set_defaults(func=cmd_install_steam_game)
 
     smart_launch_cmd = sub.add_parser("smart-launch-game", help="Try a direct launch first, then fall back to Steam")
     smart_launch_cmd.add_argument("--appid", required=True, help="Steam AppID")

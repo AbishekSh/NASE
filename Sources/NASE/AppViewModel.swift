@@ -64,6 +64,7 @@ struct StoredGameSettings: Codable {
     var legacyDirectXEnabled: Bool?
     var legacyDirectXSource: String?
     var graphicsBackendWasExplicitlySelected: Bool?
+    var keyboardLayoutID: String?
 }
 
 fileprivate struct SteamLocalMetadata {
@@ -203,12 +204,22 @@ final class AppViewModel {
     private(set) var gameSettingsByPinID: [String: StoredGameSettings] = [:]
     private(set) var launchStatusByPinID: [String: GameLaunchStatus] = [:]
     private(set) var launchSessionByPinID: [String: GameLaunchSession] = [:]
+    /// Per-game keyboard remapping. It needs nothing from the backend except
+    /// the PIDs `sessions.py` already tracks, so it stays wholly in the app.
+    let keyboardRemap = KeyboardRemapService()
     private var launchStateGeneration = 0
     @ObservationIgnored private var launchSessionMonitor: Task<Void, Never>?
+    @ObservationIgnored private var applicationActivationObserver: NSObjectProtocol?
     @ObservationIgnored private var exitWatchersBySessionID: [String: [ExitWatcher]] = [:]
+    @ObservationIgnored private var macAppObservers: [String: NSObjectProtocol] = [:]
     fileprivate var steamMetadataByAppID: [String: SteamLocalMetadata] = [:]
     private var runningHealthChecks = Set<RunnerKind>()
     private var isRefreshingLaunchSessions = false
+    @ObservationIgnored private var launchSessionPollAttempt = 0
+
+    /// How long one `list-sessions` poll may run before the poller gives up on
+    /// it and reconciles from local process state instead.
+    private static let launchSessionPollTimeoutSeconds = 20
 
     var managedBottleNames: [String] {
         let root = appSupportRootURL.appendingPathComponent("bottles", isDirectory: true)
@@ -459,8 +470,11 @@ final class AppViewModel {
         launchStatusByPinID[game.pinID]
     }
 
+    /// Offer Stop for anything the UI still shows as active, including a status
+    /// with no session behind it — otherwise a stuck card has no action at all.
     func canStop(_ game: LibraryGame) -> Bool {
         launchSessionByPinID[game.pinID]?.isActive == true
+            || launchStatusByPinID[game.pinID]?.phase.isActive == true
     }
 
     func clearLaunchStatus(for game: LibraryGame) {
@@ -480,17 +494,32 @@ final class AppViewModel {
             !windowsGameIDs.contains(pinID)
         }
         syncExitWatchers()
+        syncKeyboardRemap()
     }
 
-    func stop(_ game: LibraryGame) {
-        guard let session = launchSessionByPinID[game.pinID], session.isActive else { return }
+    func stop(_ game: LibraryGame, force: Bool = false) {
+        guard let session = launchSessionByPinID[game.pinID], session.isActive else {
+            // No tracked process to stop: the card is showing stale state, so
+            // clear it instead of leaving the user with a dead button.
+            if launchStatusByPinID[game.pinID]?.phase.isActive == true {
+                clearLaunchStatus(for: game)
+                rightPanelMessage = "Cleared the launch state for \(game.title)."
+                refreshLaunchSessions()
+            }
+            return
+        }
         setLaunchStatus(.stopping, for: game, message: "Stopping...")
         let context = effectiveContext(for: game)
         Task.detached(priority: .userInitiated) {
             do {
-                let response = try await BackendBridge.execute(.stopGame(sessionID: session.sessionID), context: context)
+                let response = try await BackendBridge.execute(.stopGame(sessionID: session.sessionID, force: force), context: context)
                 await MainActor.run {
                     self.applyLaunchSessions(response.sessions)
+                    guard let stoppedSession = response.sessions.first(where: { $0.sessionID == session.sessionID }),
+                          !stoppedSession.isActive else {
+                        self.offerForceQuit(for: game, alreadyForced: force)
+                        return
+                    }
                     self.setLaunchStatus(.exited, for: game, message: response.sessions.first?.message ?? "Stopped by user.")
                     self.rightPanelMessage = "Stopped \(game.title)."
                 }
@@ -498,8 +527,27 @@ final class AppViewModel {
                 await MainActor.run {
                     self.setLaunchStatus(.failed, for: game, message: error.localizedDescription)
                     self.rightPanelMessage = "Could not stop \(game.title)."
+                    self.offerForceQuit(for: game, alreadyForced: force)
                 }
             }
+        }
+    }
+
+    private func offerForceQuit(for game: LibraryGame, alreadyForced: Bool) {
+        let alert = NSAlert()
+        alert.messageText = "Couldn’t stop \(game.title)"
+        alert.alertStyle = .warning
+        if alreadyForced {
+            alert.informativeText = "NASE couldn't confirm that the game closed. Check its window or open Help → Troubleshooting for more options."
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
+        alert.informativeText = "You can force quit this game. Unsaved progress may be lost. Other games and Steam will stay open."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Force Quit")
+        if alert.runModal() == .alertSecondButtonReturn {
+            stop(game, force: true)
         }
     }
 
@@ -509,17 +557,44 @@ final class AppViewModel {
         }
     }
 
+    /// Reconcile launch state against the backend.
+    ///
+    /// Every exit path must clear `isRefreshingLaunchSessions`, and the backend
+    /// call must be bounded: a single call that never returns used to wedge the
+    /// in-flight flag permanently, silently killing every later poll and leaving
+    /// finished games stuck on "Running" until the app was relaunched.
     private func refreshLaunchSessionsNow() async {
         guard !isRefreshingLaunchSessions else { return }
+        launchSessionPollAttempt &+= 1
+        let attempt = launchSessionPollAttempt
         isRefreshingLaunchSessions = true
         let context = backendContext
+        // Watchdog: if this call never comes back, release the in-flight flag
+        // anyway so the next tick can try again. Bumping the attempt token stops
+        // the abandoned call from later clearing a newer poll's flag; a late
+        // reply is otherwise harmless and just applies its sessions when it lands.
+        let watchdog = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.launchSessionPollTimeoutSeconds))
+            guard let self, !Task.isCancelled, self.launchSessionPollAttempt == attempt else { return }
+            self.launchSessionPollAttempt &+= 1
+            self.isRefreshingLaunchSessions = false
+            self.appendLog("Launch session poll timed out; falling back to local process checks.")
+            self.expireSessionsWithDeadProcesses()
+        }
         let response = await Task.detached(priority: .utility) {
             let response = try? await BackendBridge.execute(.listSessions, context: context)
             return response
         }.value
-        isRefreshingLaunchSessions = false
+        watchdog.cancel()
+        if launchSessionPollAttempt == attempt {
+            isRefreshingLaunchSessions = false
+        }
         if let response {
             applyLaunchSessions(response.sessions)
+        } else {
+            // The backend did not answer. Fall back to checking the PIDs we
+            // already recorded so a game that exited still clears.
+            expireSessionsWithDeadProcesses()
         }
     }
 
@@ -541,7 +616,9 @@ final class AppViewModel {
     }
 
     private func applyLaunchSessions(_ sessions: [GameLaunchSession]) {
-        for game in nativeApps + discoveredSteamGames + wineApps {
+        // Every runner must be reconciled here. Epic and GOG games used to be
+        // excluded, so once their card said "Running" nothing could clear it.
+        for game in allLibraryGames {
             let wasActive = launchStatusByPinID[game.pinID]?.phase.isActive == true
             if let session = sessions.last(where: { launchSession($0, belongsTo: game) }) {
                 launchSessionByPinID[game.pinID] = session
@@ -560,6 +637,54 @@ final class AppViewModel {
             }
         }
         syncExitWatchers()
+        syncKeyboardRemap()
+        restartLaunchSessionMonitorIfNeeded()
+    }
+
+    /// Clear any active game whose recorded processes are all gone.
+    ///
+    /// The backend registry is still the source of truth, but when it cannot be
+    /// reached the app can answer the only question that matters — is that PID
+    /// still alive? — on its own, so a finished game never stays lit.
+    private func expireSessionsWithDeadProcesses() {
+        for game in allLibraryGames {
+            guard let session = launchSessionByPinID[game.pinID], session.isActive else { continue }
+            guard !session.pids.isEmpty else { continue }
+            guard session.pids.allSatisfy({ !Self.processIsAlive($0) }) else { continue }
+            setLaunchStatus(.exited, for: game, message: "Game process exited.")
+            launchSessionByPinID.removeValue(forKey: game.pinID)
+            refreshLibraryMetadata(for: game)
+        }
+        syncExitWatchers()
+        syncKeyboardRemap()
+    }
+
+    /// Point keyboard remapping at whatever is running right now.
+    ///
+    /// The remap gate also requires the focused application to be one of these
+    /// PIDs, so an empty set here is what guarantees a remap cannot outlive the
+    /// game it was applied to.
+    private func syncKeyboardRemap() {
+        var assignments: [pid_t: String] = [:]
+        var activeGameCount = 0
+        for game in allLibraryGames {
+            guard let session = launchSessionByPinID[game.pinID], session.isActive else { continue }
+            activeGameCount += 1
+            guard let layoutID = settings(for: game).keyboardLayoutID, !layoutID.isEmpty else { continue }
+            for pid in session.pids {
+                assignments[pid_t(pid)] = layoutID
+            }
+        }
+        keyboardRemap.updateTargets(assignments, activeGameCount: activeGameCount)
+    }
+
+    /// Report whether a PID still exists. `kill(pid, 0)` succeeds for a live
+    /// process and fails with `EPERM` for one we may not signal — only `ESRCH`
+    /// proves the process is gone.
+    private static func processIsAlive(_ pid: Int) -> Bool {
+        guard pid > 0 else { return false }
+        if kill(pid_t(pid), 0) == 0 { return true }
+        return errno != ESRCH
     }
 
     /// Refresh the source library a game belongs to after it exits, so playtime
@@ -608,17 +733,40 @@ final class AppViewModel {
     }
 
     private func launchSession(_ session: GameLaunchSession, belongsTo game: LibraryGame) -> Bool {
-        if let backendID = game.backendID, !backendID.isEmpty, session.appid == backendID {
+        guard let backendID = game.backendID, !backendID.isEmpty else {
+            return launchSession(session, matchesPathsOf: game)
+        }
+        if session.appid == backendID {
             return true
         }
-        guard game.runner == .wine,
-              let sessionExecutable = session.executable,
-              let launchURL = resolvedLaunchURL(for: game)
-        else {
-            return false
+        // Store launches record a qualified id so an Epic and a GOG game can
+        // never collide on a bare store id.
+        if game.runner == .epic, session.appid == "epic:\(backendID)" {
+            return true
         }
-        return URL(fileURLWithPath: sessionExecutable).standardizedFileURL.path
-            == launchURL.standardizedFileURL.path
+        if game.runner == .gog, session.appid == "gog:\(backendID)" {
+            return true
+        }
+        return launchSession(session, matchesPathsOf: game)
+    }
+
+    /// Fall back to install/executable paths when ids do not line up — direct
+    /// Wine launches carry no AppID, and a legacy-DirectX overlay launch
+    /// rewrites the recorded executable to the overlay copy.
+    private func launchSession(_ session: GameLaunchSession, matchesPathsOf game: LibraryGame) -> Bool {
+        if let sessionExecutable = session.executable,
+           let launchURL = resolvedLaunchURL(for: game),
+           URL(fileURLWithPath: sessionExecutable).standardizedFileURL.path
+            == launchURL.standardizedFileURL.path {
+            return true
+        }
+        if let sessionInstallDir = session.installDir,
+           let installURL = game.installURL,
+           URL(fileURLWithPath: sessionInstallDir).standardizedFileURL.path
+            == installURL.standardizedFileURL.path {
+            return true
+        }
+        return false
     }
 
     func selectRunner(_ runner: RunnerKind) {
@@ -1684,7 +1832,18 @@ final class AppViewModel {
 
         switch game.runner {
         case .steam:
-            launchSteamGame(game)
+            // Owned games have no files yet, so Play means "ask Steam to install
+            // it" — the same shape Epic and GOG cards already use.
+            if game.installURL == nil, let appid = game.backendID {
+                let graphics = settings(for: game).graphicsBackend
+                executeDetached(
+                    .installSteamGame(appid: appid, graphicsBackend: graphics),
+                    successMessage: "Steam is showing the install prompt for \(game.title).",
+                    context: effectiveContext(for: game)
+                )
+            } else {
+                launchSteamGame(game)
+            }
         case .mac:
             guard let url = game.launchURL else {
                 rightPanelMessage = "No launch target is set for \(game.title)."
@@ -1692,15 +1851,8 @@ final class AppViewModel {
                 return
             }
             setLaunchStatus(.launching, for: game, message: "Opening macOS app...")
-            let opened = NSWorkspace.shared.open(url)
-            if opened {
-                setLaunchStatus(.running, for: game, message: "Opened by macOS.")
-                rightPanelMessage = "Opened \(game.title)."
-            } else {
-                setLaunchStatus(.failed, for: game, message: "macOS could not open this app.")
-                rightPanelMessage = "Could not open \(game.title)."
-            }
             appendLog("== Launch ==\nmacOS app\n\(url.path)")
+            launchMacApp(game, at: url)
         case .wine:
             launchWineGame(game)
         case .home:
@@ -1736,6 +1888,55 @@ final class AppViewModel {
                 let context = effectiveBackendContext(backendContext.compatibilityContext(for: graphics))
                 executeDetached(.launchSourceGame(source: "gog", gameID: gameID, graphicsBackend: graphics),
                                 successMessage: "Launched \(game.title).", context: context, game: game)
+            }
+        }
+    }
+
+    /// Open a macOS app and follow the real process, so its card clears when the
+    /// user quits it. NASE does not own this process, so if macOS cannot hand
+    /// back a running application the status settles rather than staying lit.
+    private func launchMacApp(_ game: LibraryGame, at url: URL) {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { [weak self] application, error in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let error {
+                    self.setLaunchStatus(.failed, for: game, message: error.localizedDescription)
+                    self.rightPanelMessage = "Could not open \(game.title)."
+                    return
+                }
+                self.rightPanelMessage = "Opened \(game.title)."
+                guard let application, !application.isTerminated else {
+                    self.setLaunchStatus(.exited, for: game, message: "Opened by macOS.")
+                    return
+                }
+                self.setLaunchStatus(.running, for: game, message: "Opened by macOS.")
+                self.watchMacApp(application, for: game)
+            }
+        }
+    }
+
+    private func watchMacApp(_ application: NSRunningApplication, for game: LibraryGame) {
+        let pid = application.processIdentifier
+        if let existing = macAppObservers.removeValue(forKey: game.pinID) {
+            NSWorkspace.shared.notificationCenter.removeObserver(existing)
+        }
+        macAppObservers[game.pinID] = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            let terminated = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            guard terminated?.processIdentifier == pid else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let observer = self.macAppObservers.removeValue(forKey: game.pinID) {
+                    NSWorkspace.shared.notificationCenter.removeObserver(observer)
+                }
+                if self.launchStatusByPinID[game.pinID]?.phase.isActive == true {
+                    self.setLaunchStatus(.exited, for: game, message: "Quit.")
+                }
             }
         }
     }
@@ -1979,10 +2180,17 @@ final class AppViewModel {
     }
 
     func stopAllWineProcesses() {
+        let alert = NSAlert()
+        alert.messageText = "Stop all Windows apps?"
+        alert.informativeText = "This will close Windows games, apps, and Steam managed by NASE, including the selected imported environment. Unsaved progress may be lost."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Stop All")
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
         perform(OperationCard(
             kind: .killWine,
-            title: "Stop All Wine Processes",
-            detail: "Force-stop Wine and game processes across every NASE bottle.",
+            title: "Stop All Windows Apps",
+            detail: "Close Windows games, apps, and Steam managed by NASE.",
             symbolName: "stop.circle"
         ))
     }
@@ -2033,8 +2241,8 @@ final class AppViewModel {
         }
     }
 
-    func setupCompatibilityProfile(_ profile: GraphicsBackendOption) {
-        let context = effectiveBackendContext(backendContext.compatibilityContext(for: profile))
+    func setupCompatibilityProfile(_ profile: GraphicsBackendOption, bottleName: String? = nil) {
+        let context = effectiveBackendContext(backendContext.overridingTarget(bottleName: bottleName, externalPrefix: nil).compatibilityContext(for: profile))
         let isRepair = compatibilityProfileExists(profile, context: context)
         executeDetached(
             isRepair ? .repairCompatibilityProfile(profile) : .setupCompatibilityProfile(profile),
@@ -2194,13 +2402,17 @@ final class AppViewModel {
         return text.contains("NASE Shared Library")
     }
 
-    func compatibilityProfileIsReady(_ profile: GraphicsBackendOption) -> Bool {
-        let context = backendContext.compatibilityContext(for: profile)
+    func compatibilityProfileIsReady(_ profile: GraphicsBackendOption, bottleName: String? = nil) -> Bool {
+        let context = backendContext.overridingTarget(bottleName: bottleName, externalPrefix: nil).compatibilityContext(for: profile)
         return compatibilityProfileIsReady(profile, context: context)
     }
 
-    func compatibilityProfileExists(_ profile: GraphicsBackendOption) -> Bool {
-        compatibilityProfileExists(profile, context: backendContext.compatibilityContext(for: profile))
+    func compatibilityProfileExists(_ profile: GraphicsBackendOption, bottleName: String? = nil) -> Bool {
+        compatibilityProfileExists(profile, context: backendContext.overridingTarget(bottleName: bottleName, externalPrefix: nil).compatibilityContext(for: profile))
+    }
+
+    func isPreparingCompatibilityProfile(_ profile: GraphicsBackendOption) -> Bool {
+        isActionRunning(.setupCompatibilityProfile(profile)) || isActionRunning(.repairCompatibilityProfile(profile))
     }
 
     private func compatibilityProfileExists(
@@ -2319,6 +2531,10 @@ final class AppViewModel {
 
     func initialLoad() {
         refreshWineRuntimes()
+        // Start launch tracking before anything can return early. A failed
+        // preflight must not leave games permanently stuck on "Running".
+        restartLaunchSessionMonitorIfNeeded()
+        observeApplicationActivation()
         guard backendPreflightState == .unchecked else { return }
         backendPreflightState = .checking
         let context = backendContext
@@ -2345,8 +2561,18 @@ final class AppViewModel {
     }
 
     private func startBackendServices() {
-        guard launchSessionMonitor == nil else { return }
         refreshBackendJobs()
+        restartLaunchSessionMonitorIfNeeded()
+        observeApplicationActivation()
+    }
+
+    /// Start the launch-session poller, or restart it if it ever finished.
+    ///
+    /// This loop is what turns "the game exited" into "the card cleared". It
+    /// previously exited for good on the first `Task.sleep` cancellation and
+    /// nothing re-armed it, which left games showing "Running" indefinitely.
+    private func restartLaunchSessionMonitorIfNeeded() {
+        if let monitor = launchSessionMonitor, !monitor.isCancelled { return }
         launchSessionMonitor = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -2354,8 +2580,30 @@ final class AppViewModel {
                 do {
                     try await Task.sleep(for: .seconds(3))
                 } catch {
-                    return
+                    // Only a real cancellation should end the poller.
+                    if Task.isCancelled { break }
                 }
+            }
+            // Leave the slot empty so this poller can always be re-armed.
+            await MainActor.run { [weak self] in
+                self?.launchSessionMonitor = nil
+            }
+        }
+    }
+
+    /// Reconcile immediately whenever NASE comes back to the foreground, so a
+    /// game closed while the app was in the background clears on first sight.
+    private func observeApplicationActivation() {
+        guard applicationActivationObserver == nil else { return }
+        applicationActivationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.restartLaunchSessionMonitorIfNeeded()
+                self.refreshLaunchSessions()
             }
         }
     }
@@ -2788,13 +3036,13 @@ final class AppViewModel {
         let mapped = games
             .filter { shouldDisplaySteamGame($0) }
             .map { game in
-                let installURL = game.installDir.map(URL.init(fileURLWithPath:))
+                let installURL = game.installed ? game.installDir.map(URL.init(fileURLWithPath:)) : nil
                 return LibraryGame(
                     backendID: game.appid,
                     title: game.name,
                     runner: .steam,
                     capsule: "Steam",
-                    status: "Installed",
+                    status: game.installed ? "Installed" : "Owned",
                     statsText: installURL.flatMap(directorySizeText),
                     bannerURL: steamBannerURL(for: game.appid),
                     portraitURL: steamPortraitURL(for: game.appid),
@@ -3095,7 +3343,8 @@ final class AppViewModel {
         assignedBottleName: String,
         assignedExternalPrefix: String,
         legacyDirectXEnabled: Bool,
-        legacyDirectXSource: String
+        legacyDirectXSource: String,
+        keyboardLayoutID: String
     ) {
         gameSettingsByPinID[game.pinID] = StoredGameSettings(
             launchArguments: launchArguments,
@@ -3109,9 +3358,12 @@ final class AppViewModel {
             assignedExternalPrefix: assignedExternalPrefix,
             legacyDirectXEnabled: legacyDirectXEnabled,
             legacyDirectXSource: legacyDirectXSource,
-            graphicsBackendWasExplicitlySelected: true
+            graphicsBackendWasExplicitlySelected: true,
+            keyboardLayoutID: keyboardLayoutID.isEmpty ? nil : keyboardLayoutID
         )
         persistGameSettings()
+        // A layout change must reach a game that is already running.
+        syncKeyboardRemap()
         selectedGame = filteredGames.first(where: { $0.pinID == game.pinID }) ?? selectedGame
     }
 
@@ -3427,6 +3679,8 @@ final class AppViewModel {
             return "Install Runtime"
         case .launchGame:
             return "Launch Game"
+        case .installSteamGame:
+            return "Install Steam Game"
         case .smartLaunchGame:
             return "Smart Launch"
         case .debugGame:
@@ -3520,6 +3774,8 @@ final class AppViewModel {
             return "Runtime installed."
         case .launchGame:
             return "Launch request sent."
+        case .installSteamGame:
+            return "Steam is showing the install prompt."
         case .smartLaunchGame:
             return "Launch request sent."
         case .debugGame:
@@ -3776,8 +4032,6 @@ final class AppViewModel {
                             } else {
                                 self.refreshEpicLibrary(forceRefresh: false)
                             }
-                        } else if case .launchSourceGame = action {
-                            self.setLaunchStatus(.running, for: game, message: "Store launch request completed.")
                         } else if response.sessions.isEmpty {
                             self.setLaunchStatus(.launching, for: game, message: "Waiting for the game process...")
                         } else {

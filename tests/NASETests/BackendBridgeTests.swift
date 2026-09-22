@@ -2,6 +2,13 @@ import XCTest
 @testable import NASE
 
 final class BackendBridgeTests: XCTestCase {
+    func testForceQuitRequiresExplicitFlag() {
+        let normal = BackendBridge.arguments(for: .stopGame(sessionID: "game"), context: context)
+        let forced = BackendBridge.arguments(for: .stopGame(sessionID: "game", force: true), context: context)
+        XCTAssertFalse(normal.contains("--force"))
+        XCTAssertEqual(forced, normal + ["--force"])
+    }
+
     func testSourceBuildFindsPythonWithoutShellPath() {
         let python = "/opt/homebrew/bin/python3"
         XCTAssertEqual(BackendContext.preferredPythonCommand(

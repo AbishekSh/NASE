@@ -257,7 +257,6 @@ def _graphics_launch_env(
     if graphics_backend == "dxvk":
         from .dxvk_macos import dxvk_macos_launch_environment
 
-        env["WINEDLLOVERRIDES"] = "d3d11=n;d3d10core=n"
         env.update(dxvk_macos_launch_environment(bottle))
     elif graphics_backend == "dxmt":
         env["WINEDLLOVERRIDES"] = "dxgi=n,b;d3d11=n,b;d3d10core=n,b;winemetal=n,b"
@@ -695,6 +694,36 @@ def launch_app(
         wait=wait,
         graphics_backend=graphics_backend,
         restart_existing=restart_existing and graphics_backend != "none",
+        graphics_source=graphics_source,
+    )
+
+
+def install_app(
+    *,
+    bottle: Bottle,
+    wine64_path: Path,
+    appid: str,
+    graphics_backend: str = "dxmt",
+    wait: bool = False,
+    graphics_source: Path | None = None,
+) -> tuple[int, str]:
+    """Ask the profile's Windows Steam to install an owned game.
+
+    Downloading, disk-space checks, and depot selection all belong to Steam, so
+    NASE only opens the client on the install prompt for this AppID. The client
+    stays visible here — unlike a launch, the user has a dialog to confirm.
+
+    A running client is never restarted: Steam forwards the URL to the existing
+    instance, and restarting it would interrupt whatever is already playing.
+    """
+    return run_steam(
+        bottle=bottle,
+        wine64_path=wine64_path,
+        steam_path=steam_windows_path(),
+        extra_args=[f"steam://install/{appid}"],
+        wait=wait,
+        graphics_backend=graphics_backend,
+        restart_existing=False,
         graphics_source=graphics_source,
     )
 

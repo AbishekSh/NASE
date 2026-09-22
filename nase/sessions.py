@@ -45,14 +45,22 @@ def _save(sessions: list[dict[str, Any]]) -> None:
     temporary.replace(path)
 
 
-def _processes() -> dict[int, str]:
-    result = subprocess.run(
-        ["/bin/ps", "ax", "-o", "pid=,uid=,stat=,command="],
-        capture_output=True,
-        text=True,
-        timeout=5,
-        check=False,
-    )
+def _processes() -> dict[int, str] | None:
+    """Return live user processes, or None when the process table is unreadable.
+
+    Callers must treat None as "unknown", never as "nothing is running": a
+    timed-out or failed `ps` must not be allowed to fabricate a game exit.
+    """
+    try:
+        result = subprocess.run(
+            ["/bin/ps", "ax", "-o", "pid=,uid=,stat=,command="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
     processes: dict[int, str] = {}
     for line in result.stdout.splitlines():
         parts = line.strip().split(maxsplit=3)
@@ -64,21 +72,33 @@ def _processes() -> dict[int, str]:
 
 
 def _prefix_pids(prefix: str) -> set[int]:
+    """Return PIDs holding a file inside the prefix.
+
+    `lsof -t +D` walks the whole prefix and can exceed its timeout on a large
+    Steam library. That is not fatal: an empty set degrades to the same
+    behaviour as a host without lsof, where exact install-directory and
+    executable path matches still identify the game.
+    """
     prefix_path = Path(prefix)
     if not prefix_path.is_dir() or not Path("/usr/sbin/lsof").exists():
         return set()
-    result = subprocess.run(
-        ["/usr/sbin/lsof", "-t", "+D", str(prefix_path)],
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["/usr/sbin/lsof", "-t", "+D", str(prefix_path)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return set()
     return {int(line) for line in result.stdout.splitlines() if line.strip().isdigit()}
 
 
 def steam_is_running(prefix: str) -> bool:
     processes = _processes()
+    if processes is None:
+        return False
     for pid in _prefix_pids(prefix):
         command = processes.get(pid, "").replace("\\", "/").lower()
         if re.search(r"(?:^|/)steam(?:\.exe)?(?:\s|$)", command):
@@ -151,7 +171,9 @@ def _matching_pids(
             if install_name and executable_name
             else None
         )
-        install_pattern = rf"^c:/.*?/{re.escape(install_name)}/" if install_name else None
+        # Steam games live on C:, but Epic/GOG installs sit in a shared host
+        # library that Wine maps to another drive letter, so match any drive.
+        install_pattern = rf"^[a-z]:/.*?/{re.escape(install_name)}/" if install_name else None
         exact_path_match = bool(executable_path_pattern and re.search(executable_path_pattern, normalized))
         prefix_bound_name_match = bool(
             pid in allowed and executable_pattern and re.search(executable_pattern, normalized)
@@ -254,6 +276,10 @@ def reconcile_sessions() -> list[dict[str, Any]]:
     reconcile_shared_steam_client()
     sessions = _load()
     processes = _processes()
+    if processes is None:
+        # The process table could not be read. Report the sessions unchanged
+        # rather than guessing; the next reconcile will settle them.
+        return sessions
     now = time.time()
     changed = False
     prefix_cache: dict[str, set[int]] = {}
@@ -326,7 +352,7 @@ def reconcile_sessions() -> list[dict[str, Any]]:
     return sessions
 
 
-def stop_session(session_id: str) -> tuple[dict[str, Any] | None, list[int]]:
+def stop_session(session_id: str, *, force: bool = False) -> tuple[dict[str, Any] | None, list[int]]:
     sessions = reconcile_sessions()
     session = next((item for item in sessions if item.get("session_id") == session_id), None)
     if session is None:
@@ -335,11 +361,13 @@ def stop_session(session_id: str) -> tuple[dict[str, Any] | None, list[int]]:
         return session, []
 
     processes = _processes()
+    if processes is None:
+        return session, []
     pids = _matching_pids(session, processes, _prefix_pids(str(session.get("prefix") or "")))
     update_session(session_id, status="stopping", message="Stopping game processes.")
     for pid in pids:
         try:
-            os.kill(pid, signal.SIGTERM)
+            os.kill(pid, signal.SIGKILL if force else signal.SIGTERM)
         except ProcessLookupError:
             pass
 
@@ -348,12 +376,17 @@ def stop_session(session_id: str) -> tuple[dict[str, Any] | None, list[int]]:
     while remaining and time.monotonic() < deadline:
         time.sleep(0.1)
         live = _processes()
+        if live is None:
+            break
         remaining = [pid for pid in remaining if pid in live]
-    for pid in remaining:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+    if remaining:
+        pending = update_session(
+            session_id,
+            status="stopping",
+            pids=remaining,
+            message="The game is still running." if force else "The game didn't respond to Stop. You can force quit it.",
+        )
+        return pending, [pid for pid in pids if pid not in remaining]
 
     stopped = update_session(
         session_id,
