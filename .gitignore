@@ -17,3 +17,8 @@ __pycache__/
 *.profraw
 *.compact
 pakstore.json
+
+# Compiler intermediates that can escape custom Swift scratch directories
+*.o
+*.d
+*.swiftdeps
