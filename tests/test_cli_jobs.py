@@ -9,8 +9,27 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from nase.bottle import Bottle
 import nase.cli as cli
+import nase.sessions as sessions
 from nase.jobs import load_job
+
+
+def run_main(argv: list[str], **patches) -> tuple[list[dict], object]:
+    """Run the CLI in --jsonl mode and return its events and exit code."""
+    stdout = io.StringIO()
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(cli, "managed_gstreamer_environment", return_value={}))
+        for name, value in patches.items():
+            stack.enter_context(patch.object(cli, name, value))
+        stack.enter_context(patch.object(cli.sys, "argv", ["nase.py", "--jsonl", *argv]))
+        stack.enter_context(contextlib.redirect_stdout(stdout))
+        try:
+            cli.main()
+            code = 0
+        except SystemExit as exc:
+            code = exc.code
+    return [json.loads(line) for line in stdout.getvalue().splitlines()], code
 
 
 class StreamedJobLifecycleTests(unittest.TestCase):
@@ -135,23 +154,8 @@ class OutputModeTests(unittest.TestCase):
         self.assertEqual((plain, code), ("", 4))
         self.assertIn("Winetricks failed (exit 4)", errors)
 
-    def _main(self, argv: list[str], **patches) -> tuple[list[dict], object]:
-        stdout = io.StringIO()
-        with contextlib.ExitStack() as stack:
-            stack.enter_context(patch.object(cli, "managed_gstreamer_environment", return_value={}))
-            for name, value in patches.items():
-                stack.enter_context(patch.object(cli, name, value))
-            stack.enter_context(patch.object(cli.sys, "argv", ["nase.py", "--jsonl", *argv]))
-            stack.enter_context(contextlib.redirect_stdout(stdout))
-            try:
-                cli.main()
-                code = 0
-            except SystemExit as exc:
-                code = exc.code
-        return [json.loads(line) for line in stdout.getvalue().splitlines()], code
-
     def test_graphics_installers_report_structured_results(self) -> None:
-        events, code = self._main(
+        events, code = run_main(
             ["--wine", "/bin/echo", "install-dxmt", "--dxmt-source", "/x"],
             install_dxmt=lambda **_: (2, "missing d3d11.dll"),
             _resolve_bottle=lambda _args: SimpleNamespace(name="Test", prefix=self.root / "prefix"),
@@ -161,11 +165,50 @@ class OutputModeTests(unittest.TestCase):
         self.assertEqual(events[-1]["errors"], ["DXMT install failed (exit 2)."])
 
     def test_missing_wine_is_reported_as_a_failed_result(self) -> None:
-        events, code = self._main(["run-steam", "--no-wait"])
+        events, code = run_main(["run-steam", "--no-wait"])
         self.assertEqual(code, 1)
         self.assertEqual(events[-1]["action"], "run-steam")
         self.assertEqual(events[-1]["status"], "failed")
         self.assertIn("--wine64 is required", events[-1]["message"])
+
+
+class SteamHandoffTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp(prefix="nase-cli-handoff-test-"))
+        self.bottle = Bottle("Test", self.root, self.root / "prefix", self.root / "logs", self.root / "downloads", self.root / "cache")
+        self.app = SimpleNamespace(appid="250900", name="Isaac", install_dir=self.root / "isaac", library_path=self.root / "lib")
+        cli._OPEN_STREAM_JOB.clear()
+
+    def tearDown(self) -> None:
+        cli._OPEN_STREAM_JOB.clear()
+
+    def test_busy_shared_library_fails_the_launch_session(self) -> None:
+        def library_owned_elsewhere(**_activity):
+            raise RuntimeError("Shared Steam library is currently owned by Default-D3DMetal.")
+
+        for command in ("launch-game", "smart-launch-game"):
+            with self.subTest(command=command), contextlib.ExitStack() as stack:
+                registry = self.root / f"{command}-sessions.json"
+                stack.enter_context(patch("nase.jobs.app_support_root", return_value=self.root))
+                stack.enter_context(patch.object(sessions, "_registry_path", return_value=registry))
+                stack.enter_context(patch.object(sessions, "_processes", return_value={}))
+                stack.enter_context(patch.object(sessions, "_prefix_pids", return_value=set()))
+                stack.enter_context(patch.object(sessions, "reconcile_shared_steam_client"))
+                events, code = run_main(
+                    ["--wine", "/bin/echo", command, "--appid", "250900", "--no-wait"],
+                    _resolve_bottle=lambda _args: self.bottle,
+                    resolve_registered_app=lambda *_a, **_k: (self.app, "library_1"),
+                    _bind_launch_profile=lambda *_a, **_k: "dxmt-wine-stable-11-v1",
+                    guess_game_executable=lambda *_a, **_k: (_ for _ in ()).throw(FileNotFoundError()),
+                    scan_game_dir=lambda *_a, **_k: SimpleNamespace(signals=[]),
+                    run_game_executable=lambda **_: (9, "direct launch exited"),
+                    steam_is_running=lambda *_: False,
+                    acquire_steam_activity=library_owned_elsewhere,
+                )
+                stored = json.loads(registry.read_text(encoding="utf-8"))["sessions"]
+                self.assertEqual(code, 1)
+                self.assertIn("owned by Default-D3DMetal", events[-1]["message"])
+                self.assertEqual([session["status"] for session in stored], ["failed"])
 
 
 if __name__ == "__main__":

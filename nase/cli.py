@@ -345,10 +345,16 @@ def _resolved_graphics_backend(args: argparse.Namespace, *, for_steam: bool) -> 
     return args.graphics_backend
 
 
-def _acquire_library_or_error(args: argparse.Namespace, *, action: str, **activity) -> dict:
+def _acquire_library_or_error(
+    args: argparse.Namespace, *, action: str, session_id: str | None = None, **activity
+) -> dict:
     try:
         return acquire_steam_activity(**activity)
     except RuntimeError as exc:
+        if session_id:
+            # Without this the session stays "launching" and the app's poller
+            # puts the card back into a launch state after showing the error.
+            update_session(session_id, status="failed", message="Another profile's Steam owns this library.")
         message = (
             f"{exc} Close Steam from NASE's current bottle, or use Kill Wine for that bottle if Steam will not exit, "
             "then try again. NASE keeps shared game files locked to one Windows Steam instance during updates."
@@ -1591,52 +1597,53 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
 
-def cmd_launch_game(args: argparse.Namespace) -> None:
-    out = Output(args, "launch-game")
-    wine64 = _require_wine64(args)
-    bottle = _resolve_bottle(args)
-    app, library_id = resolve_registered_app(bottle, args.appid)
-    graphics_backend = _resolved_graphics_backend(args, for_steam=False)
-    profile_id = _bind_launch_profile(
-        args, action=out.action, bottle=bottle, wine_path=wine64, graphics_backend=graphics_backend
-    )
-    out.start(f"Launching {app.name} ({app.appid}) via Steam...")
-    data = {"appid": app.appid, "name": app.name}
-    _restore_graphics_payload(args, out, bottle=bottle, wine64=wine64, graphics_backend=graphics_backend, data=data)
+def _checked_executable_hint(out: Output, app, *, appid: str, wine64: Path, graphics_backend: str) -> Path | None:
+    """Return the game's likely executable, failing early if this Wine cannot run it."""
     try:
-        executable_hint = guess_game_executable(app.install_dir, args.appid)
+        executable = guess_game_executable(app.install_dir, appid)
     except (FileNotFoundError, RuntimeError):
-        executable_hint = None
-    if executable_hint is not None:
-        try:
-            validate_executable_compatibility(
-                executable=executable_hint, wine_path=wine64, graphics_backend=graphics_backend
-            )
-        except RuntimeError as exc:
-            out.fail(str(exc))
+        return None
+    try:
+        validate_executable_compatibility(executable=executable, wine_path=wine64, graphics_backend=graphics_backend)
+    except RuntimeError as exc:
+        out.fail(str(exc))
+    return executable
+
+
+def _launch_through_steam(
+    args: argparse.Namespace,
+    out: Output,
+    *,
+    bottle,
+    wine64: Path,
+    library_id: str,
+    profile_id: str,
+    graphics_backend: str,
+    session_id: str,
+    strategy: str,
+) -> tuple[int, str]:
+    """Hand a launch to Windows Steam and record who owns the Steam client.
+
+    On failure the library reservation is released if Steam is not running and
+    the session is marked failed; the caller reports the error.
+    """
     steam_was_running = steam_is_running(str(bottle.prefix))
     _acquire_library_or_error(
         args,
         action=out.action,
+        session_id=session_id,
         library_id=library_id,
         prefix=str(bottle.prefix),
         bottle=bottle.name,
         profile_id=profile_id,
-        appid=app.appid,
+        appid=args.appid,
     )
-    launch_session = create_session(
-        bottle=bottle,
-        appid=app.appid,
-        game=app.name,
-        executable=executable_hint,
-        install_dir=app.install_dir,
-        graphics_backend=graphics_backend,
-        strategy="steam",
-        profile_id=profile_id,
-        wine_path=wine64,
-        steam_started_by_nase=not steam_was_running,
+    update_session(
+        session_id,
+        strategy=strategy,
         steam_was_running=steam_was_running,
-        library_id=library_id,
+        steam_started_by_nase=not steam_was_running,
+        steam_cleanup_status="not-owned" if steam_was_running else "pending",
     )
     code, tail = launch_app(
         bottle=bottle,
@@ -1651,11 +1658,53 @@ def cmd_launch_game(args: argparse.Namespace) -> None:
         if not steam_is_running(str(bottle.prefix)):
             release_steam_activity(library_id=library_id, prefix=str(bottle.prefix))
         update_session(
-            launch_session["session_id"],
+            session_id,
             status="failed",
             message="Steam launch failed.",
-            steam_cleanup_after=time.time() + 10 if launch_session.get("steam_started_by_nase") else None,
+            steam_cleanup_after=time.time() + 10 if not steam_was_running else None,
         )
+    return code, tail
+
+
+def cmd_launch_game(args: argparse.Namespace) -> None:
+    out = Output(args, "launch-game")
+    wine64 = _require_wine64(args)
+    bottle = _resolve_bottle(args)
+    app, library_id = resolve_registered_app(bottle, args.appid)
+    graphics_backend = _resolved_graphics_backend(args, for_steam=False)
+    profile_id = _bind_launch_profile(
+        args, action=out.action, bottle=bottle, wine_path=wine64, graphics_backend=graphics_backend
+    )
+    out.start(f"Launching {app.name} ({app.appid}) via Steam...")
+    data = {"appid": app.appid, "name": app.name}
+    _restore_graphics_payload(args, out, bottle=bottle, wine64=wine64, graphics_backend=graphics_backend, data=data)
+    executable_hint = _checked_executable_hint(
+        out, app, appid=args.appid, wine64=wine64, graphics_backend=graphics_backend
+    )
+    launch_session = create_session(
+        bottle=bottle,
+        appid=app.appid,
+        game=app.name,
+        executable=executable_hint,
+        install_dir=app.install_dir,
+        graphics_backend=graphics_backend,
+        strategy="steam",
+        profile_id=profile_id,
+        wine_path=wine64,
+        library_id=library_id,
+    )
+    code, tail = _launch_through_steam(
+        args,
+        out,
+        bottle=bottle,
+        wine64=wine64,
+        library_id=library_id,
+        profile_id=profile_id,
+        graphics_backend=graphics_backend,
+        session_id=launch_session["session_id"],
+        strategy="steam",
+    )
+    if code != 0:
         out.fail_process("App launch failed", code, tail, data={**data, "tail": tail})
     out.done("Launch request sent.", data={**data, "tail": tail, "session": _current_session(launch_session)})
 
@@ -1685,6 +1734,63 @@ def cmd_install_steam_game(args: argparse.Namespace) -> None:
             errors=[f"Steam install request failed (exit {code})."],
         )
     out.done(f"Steam is showing the install prompt for {args.appid}.", data=data)
+
+
+def _try_direct_launch(
+    args: argparse.Namespace,
+    out: Output,
+    *,
+    bottle,
+    wine64: Path,
+    app,
+    executable_hint: Path | None,
+    graphics_backend: str,
+    launch_session: dict,
+    data: dict,
+) -> str | None:
+    """Start the game without Steam when that is safe.
+
+    Returns None once the game has started and the result is reported;
+    otherwise returns why the launch should fall back to Steam.
+    """
+    try:
+        scan = scan_game_dir(app.install_dir, max_files=1200)
+        if any(signal.key == "unity" for signal in scan.signals):
+            return "Skipped direct launch for Unity title; using Steam launch for better renderer compatibility."
+    except Exception:
+        pass
+    try:
+        assert_direct_launch_safe(library_path=app.library_path, appid=args.appid)
+        executable = executable_hint or guess_game_executable(app.install_dir, args.appid)
+        code, tail = run_game_executable(
+            bottle=bottle,
+            wine64_path=wine64,
+            executable=executable,
+            extra_args=None,
+            extra_env=None,
+            cwd=executable.parent,
+            wine_debug="-all",
+            wait=False,
+            graphics_backend=graphics_backend,
+            probe_seconds=args.probe_seconds,
+            graphics_source=_d3dmetal_source(args, graphics_backend),
+        )
+    except Exception as exc:
+        return str(exc)
+    if code != 0:
+        return f"Direct launch failed (exit {code}). Tail:\n{tail}"
+    update_session(launch_session["session_id"], strategy="direct", message="Direct launch request sent.")
+    out.done(
+        "Direct launch started.",
+        data={
+            **data,
+            "executable": str(executable),
+            "strategy": "direct",
+            "tail": tail,
+            "session": _current_session(launch_session),
+        },
+    )
+    return None
 
 
 def cmd_smart_launch_game(args: argparse.Namespace) -> None:
@@ -1738,22 +1844,11 @@ def cmd_smart_launch_game(args: argparse.Namespace) -> None:
             out.step("setup-d3dmetal-steam", "Prepared hidden D3DMetal Steam environment.", status="ok")
 
     _restore_graphics_payload(args, out, bottle=bottle, wine64=wine64, graphics_backend=graphics_backend, data=data)
-
-    direct_error: str | None = None
-    skip_direct_reason: str | None = None
-    executable_hint: Path | None = None
-    if app is not None:
-        try:
-            executable_hint = guess_game_executable(app.install_dir, args.appid)
-        except (FileNotFoundError, RuntimeError):
-            executable_hint = None
-        if executable_hint is not None:
-            try:
-                validate_executable_compatibility(
-                    executable=executable_hint, wine_path=wine64, graphics_backend=graphics_backend
-                )
-            except RuntimeError as exc:
-                out.fail(str(exc))
+    executable_hint = (
+        _checked_executable_hint(out, app, appid=args.appid, wine64=wine64, graphics_backend=graphics_backend)
+        if app is not None
+        else None
+    )
     launch_session = create_session(
         bottle=bottle,
         appid=args.appid,
@@ -1766,97 +1861,37 @@ def cmd_smart_launch_game(args: argparse.Namespace) -> None:
         wine_path=wine64,
         library_id=library_id,
     )
-    try:
-        if app is None:
-            skip_direct_reason = "No manifest found in the hidden D3DMetal environment yet; using Steam protocol launch."
-        else:
-            scan = scan_game_dir(app.install_dir, max_files=1200)
-            if any(signal.key == "unity" for signal in scan.signals):
-                skip_direct_reason = "Skipped direct launch for Unity title; using Steam launch for better renderer compatibility."
-    except Exception:
-        scan = None
-
-    if skip_direct_reason is None:
-        try:
-            assert_direct_launch_safe(library_path=app.library_path, appid=args.appid)
-            executable = executable_hint or guess_game_executable(app.install_dir, args.appid)
-            code, tail = run_game_executable(
-                bottle=bottle,
-                wine64_path=wine64,
-                executable=executable,
-                extra_args=None,
-                extra_env=None,
-                cwd=executable.parent,
-                wine_debug="-all",
-                wait=False,
-                graphics_backend=graphics_backend,
-                probe_seconds=args.probe_seconds,
-                graphics_source=_d3dmetal_source(args, graphics_backend),
-            )
-            if code == 0:
-                update_session(launch_session["session_id"], strategy="direct", message="Direct launch request sent.")
-                out.done(
-                    "Direct launch started.",
-                    data={
-                        **data,
-                        "executable": str(executable),
-                        "strategy": "direct",
-                        "tail": tail,
-                        "session": _current_session(launch_session),
-                    },
-                )
-                return
-            direct_error = f"Direct launch failed (exit {code}). Tail:\n{tail}"
-        except Exception as exc:
-            direct_error = str(exc)
+    if app is None:
+        direct_error = "No manifest found in the hidden D3DMetal environment yet; using Steam protocol launch."
     else:
-        direct_error = skip_direct_reason
+        direct_error = _try_direct_launch(
+            args, out, bottle=bottle, wine64=wine64, app=app, executable_hint=executable_hint,
+            graphics_backend=graphics_backend, launch_session=launch_session, data=data,
+        )
+        if direct_error is None:
+            return
 
-    steam_was_running = steam_is_running(str(bottle.prefix))
-    _acquire_library_or_error(
+    code, tail = _launch_through_steam(
         args,
-        action=out.action,
-        library_id=library_id,
-        prefix=str(bottle.prefix),
-        bottle=bottle.name,
-        profile_id=profile_id,
-        appid=args.appid,
-    )
-    update_session(
-        launch_session["session_id"],
-        steam_was_running=steam_was_running,
-        steam_started_by_nase=not steam_was_running,
-        steam_cleanup_status="not-owned" if steam_was_running else "pending",
-    )
-    code, tail = launch_app(
+        out,
         bottle=bottle,
-        wine64_path=wine64,
-        appid=args.appid,
+        wine64=wine64,
+        library_id=library_id,
+        profile_id=profile_id,
         graphics_backend=graphics_backend,
-        wait=not args.no_wait,
-        restart_existing=not steam_was_running,
-        graphics_source=_d3dmetal_source(args, graphics_backend),
+        session_id=launch_session["session_id"],
+        strategy="steam-fallback",
     )
     if code != 0:
-        if not steam_is_running(str(bottle.prefix)):
-            release_steam_activity(library_id=library_id, prefix=str(bottle.prefix))
-        update_session(
-            launch_session["session_id"],
-            status="failed",
-            strategy="steam-fallback",
-            message="Steam launch failed.",
-            steam_cleanup_after=time.time() + 10 if not steam_was_running else None,
-        )
         failure = f"Fallback Steam launch failed (exit {code}). Tail:\n{tail}"
         out.fail(
-            f"{direct_error or 'Direct launch failed.'}\n\n{failure}",
+            f"{direct_error}\n\n{failure}",
             code=code,
             data={**data, "tail": tail, "strategy": "steam-fallback", "session": launch_session},
             errors=[failure],
         )
-
-    update_session(launch_session["session_id"], strategy="steam-fallback", message="Steam launch request sent.")
-    warnings = [direct_error] if direct_error else []
+    update_session(launch_session["session_id"], message="Steam launch request sent.")
+    warnings = [direct_error]
     out.done(
         "Opened with Steam after direct launch failed.",
         data={
