@@ -135,7 +135,7 @@ struct SetupWizardSheet: View {
                 checklistRow(title: "Rosetta 2 (Apple Silicon)", detail: dependencyDetail(named: "Rosetta 2"))
                 checklistRow(title: "Managed Wine", detail: model.detectedWinePathStatus(winePath))
                 checklistRow(title: "Graphics (DXMT)", detail: firstMeaningfulDXMTStatus)
-                checklistRow(title: "Steam", detail: model.latestSetupResult == nil ? "PENDING: Installed during setup" : finishSubtitle)
+                checklistRow(title: "Steam", detail: steamSetupStatus)
             }
             .padding(.top, 10)
         } label: {
@@ -354,16 +354,15 @@ struct SetupWizardSheet: View {
         return ["READY TO INSTALL: NASE will download, verify, and select DXMT 0.71."]
     }
 
-    private var finishSubtitle: String {
-        if let job = model.jobs.recent.first(where: { $0.action == "Setup Metal" }) {
-            switch job.status {
-            case .completed:
-                return "OK: Steam is ready in the managed bottle."
-            case .failed, .cancelled, .interrupted:
-                return "FAIL: Setup did not finish. Rerun Set Up NASE."
-            case .queued, .started, .cancelling:
-                return "Setup is still running."
-            }
+    private var steamSetupStatus: String {
+        if model.compatibilityProfileIsReady(.dxmt) {
+            return "OK: Steam is ready in the managed bottle."
+        }
+        if model.dependencyBootstrapPhase == .failed {
+            return "FAIL: Setup did not finish. Rerun Set Up NASE."
+        }
+        if model.isDependencyBootstrapRunning {
+            return "Setup is still running."
         }
         return "PENDING: Installed during setup"
     }
