@@ -313,11 +313,11 @@ struct ContentView: View {
                         .foregroundStyle(status == .ready ? theme.textSecondary : theme.textPrimary)
                         .help(status.detail)
                     if status != .ready {
-                        Text(status == .working ? (model.currentOperationJob?.message ?? status.detail) : status.detail)
+                        Text(status == .working ? (model.jobs.current?.message ?? status.detail) : status.detail)
                             .font(.system(size: 11))
                             .foregroundStyle(theme.textSecondary)
                             .lineLimit(3)
-                            .help(status == .working ? (model.currentOperationJob?.message ?? status.detail) : status.detail)
+                            .help(status == .working ? (model.jobs.current?.message ?? status.detail) : status.detail)
                     }
                     if let actionTitle = status.actionTitle {
                         Button(actionTitle) {
@@ -333,7 +333,7 @@ struct ContentView: View {
         }
         .padding(12)
         .background(theme.sidebarBackground)
-        .animation(.easeInOut(duration: 0.18), value: model.currentOperationJob?.id)
+        .animation(.easeInOut(duration: 0.18), value: model.jobs.current?.id)
     }
 
     private func refreshSelectedSource() {

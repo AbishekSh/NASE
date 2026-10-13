@@ -14,6 +14,7 @@ import traceback
 import uuid
 import zipfile
 from pathlib import Path
+from typing import NoReturn
 
 from . import APP_NAME, DEFAULT_BOTTLE_NAME
 from .advisor import recommend_dependencies
@@ -43,6 +44,7 @@ from .jobs import cancel_job, create_job, list_jobs, update_job
 from .profiles import PROFILES, bind_profile, list_profiles, mark_profile_ready, migrate_imported_d3dmetal_profiles
 from .runtime import detect_wine_runtime, is_apple_silicon, resolve_executable, resolve_with_fallback, run_logged
 from .scanner import scan_game_dir
+from .state_files import atomic_write_json
 from .sessions import create_session, mark_steam_opened_by_user, reconcile_sessions, steam_is_running, stop_session, update_session
 from .steam import (
     ensure_shared_steam,
@@ -96,6 +98,9 @@ _TRANSIENT_JOB_ACTIONS = {
     "steam-identity-status",
     "source-status",
     "list-source-games",
+    "discover-d3dmetal",
+    "scan-game",
+    "advise-game",
 }
 _TRANSIENT_JOB_IDS: set[str] = set()
 _JOB_TARGET: dict[str, str] = {}
@@ -105,32 +110,23 @@ _JOB_TARGET: dict[str, str] = {}
 _OPEN_STREAM_JOB: dict[str, str] = {}
 
 
-def _json_enabled(args: argparse.Namespace) -> bool:
-    return bool(getattr(args, "json", False))
-
-
-def _stream_enabled(args: argparse.Namespace) -> bool:
-    return bool(getattr(args, "jsonl", False))
-
-
 def _emit_json(
     *,
     action: str,
     ok: bool,
     message: str,
+    status: str,
     data: dict | None = None,
     warnings: list[str] | None = None,
     errors: list[str] | None = None,
-    status: str | None = None,
-    job_id: str | None = None,
 ) -> None:
     print(
         json.dumps(
             {
                 "ok": ok,
                 "action": action,
-                "status": status or ("completed" if ok else "failed"),
-                "job_id": job_id or uuid.uuid4().hex,
+                "status": status,
+                "job_id": uuid.uuid4().hex,
                 "message": message,
                 "data": data or {},
                 "warnings": warnings or [],
@@ -188,108 +184,142 @@ def _emit_stream_event(
         _OPEN_STREAM_JOB.clear()
 
 
-def _stream_start(*, action: str, message: str) -> str:
-    job_id = uuid.uuid4().hex
-    if action in _TRANSIENT_JOB_ACTIONS:
-        _TRANSIENT_JOB_IDS.add(job_id)
-    else:
-        create_job(job_id=job_id, action=action, message=message, target=_JOB_TARGET)
-    _emit_stream_event(
-        event="job",
-        action=action,
-        job_id=job_id,
-        status="started",
-        message=message,
-    )
-    _OPEN_STREAM_JOB.clear()
-    _OPEN_STREAM_JOB.update(job_id=job_id, action=action)
-    return job_id
+class Output:
+    """Report one command's progress and result in the requested mode.
 
+    ``--jsonl`` streams job, step, and result events for the app; ``--json``
+    prints one result object; plain mode prints readable text for Terminal.
+    Commands describe what happened once instead of branching on the mode.
+    """
 
-def _stream_step(*, action: str, job_id: str, name: str, status: str, message: str) -> None:
-    _emit_stream_event(
-        event="step",
-        action=action,
-        job_id=job_id,
-        status=status,
-        message=message,
-        data={"step": {"name": name, "status": status}},
-    )
+    def __init__(self, args: argparse.Namespace, action: str) -> None:
+        self.action = action
+        self.stream = bool(getattr(args, "jsonl", False))
+        self.json = bool(getattr(args, "json", False))
+        self.plain = not self.stream and not self.json
 
+    @property
+    def job_id(self) -> str | None:
+        return _OPEN_STREAM_JOB.get("job_id")
 
-def _stream_progress(
-    *,
-    action: str,
-    job_id: str,
-    name: str,
-    status: str,
-    message: str,
-    completed_steps: int,
-    total_steps: int,
-) -> None:
-    progress = completed_steps / total_steps if total_steps else None
-    _emit_stream_event(
-        event="step",
-        action=action,
-        job_id=job_id,
-        status=status,
-        message=message,
-        data={
-            "step": {"name": name, "status": status},
-            "completed_steps": completed_steps,
-            "total_steps": total_steps,
-            "progress": progress,
-        },
-    )
+    def _open_job(self, message: str) -> str:
+        if not _OPEN_STREAM_JOB:
+            job_id = uuid.uuid4().hex
+            if self.action in _TRANSIENT_JOB_ACTIONS:
+                _TRANSIENT_JOB_IDS.add(job_id)
+            else:
+                create_job(job_id=job_id, action=self.action, message=message, target=_JOB_TARGET)
+            _emit_stream_event(event="job", action=self.action, job_id=job_id, status="started", message=message)
+            _OPEN_STREAM_JOB.update(job_id=job_id, action=self.action)
+        return _OPEN_STREAM_JOB["job_id"]
 
+    def start(self, message: str) -> None:
+        """Begin a long-running command; plain mode prints the message."""
+        if self.stream:
+            self._open_job(message)
+        elif self.plain:
+            print(message)
 
-def _stream_result(
-    *,
-    action: str,
-    job_id: str,
-    ok: bool,
-    status: str,
-    message: str,
-    data: dict | None = None,
-    warnings: list[str] | None = None,
-    errors: list[str] | None = None,
-) -> None:
-    _emit_stream_event(
-        event="result",
-        action=action,
-        job_id=job_id,
-        status=status,
-        message=message,
-        ok=ok,
-        data=data,
-        warnings=warnings,
-        errors=errors,
-    )
+    def note(self, message: str) -> None:
+        """Print extra detail for Terminal users only."""
+        if self.plain:
+            print(message)
 
-
-def _json_error(args: argparse.Namespace, *, action: str, message: str, code: int = 1, data: dict | None = None) -> None:
-    if _stream_enabled(args):
-        job_id = _OPEN_STREAM_JOB.get("job_id") or _stream_start(action=action, message=message)
-        _stream_result(
-            action=_OPEN_STREAM_JOB.get("action") or action,
-            job_id=job_id,
-            ok=False,
-            status="failed",
+    def step(
+        self,
+        name: str,
+        message: str,
+        *,
+        status: str = "started",
+        completed_steps: int | None = None,
+        total_steps: int | None = None,
+    ) -> None:
+        if self.plain:
+            if status == "started":
+                print(message)
+            return
+        if not self.stream:
+            return
+        data: dict = {"step": {"name": name, "status": status}}
+        if completed_steps is not None:
+            data.update(
+                completed_steps=completed_steps,
+                total_steps=total_steps,
+                progress=completed_steps / total_steps if total_steps else None,
+            )
+        _emit_stream_event(
+            event="step",
+            action=self.action,
+            job_id=self._open_job(message),
+            status=status,
             message=message,
             data=data,
-            errors=[message],
         )
+
+    def done(
+        self,
+        message: str,
+        *,
+        data: dict | None = None,
+        ok: bool = True,
+        status: str | None = None,
+        warnings: list[str] | None = None,
+        errors: list[str] | None = None,
+        text: str | None = None,
+    ) -> None:
+        """Report the final result. ``text`` replaces the plain-mode message."""
+        status = status or ("completed" if ok else "failed")
+        if self.stream:
+            job_id = self._open_job(message)
+            _emit_stream_event(
+                event="result",
+                action=_OPEN_STREAM_JOB.get("action", self.action),
+                job_id=job_id,
+                status=status,
+                message=message,
+                ok=ok,
+                data=data,
+                warnings=warnings,
+                errors=errors,
+            )
+        elif self.json:
+            _emit_json(action=self.action, ok=ok, message=message, status=status, data=data, warnings=warnings, errors=errors)
+        else:
+            output = message if text is None else text
+            if output:
+                print(output)
+
+    def fail(
+        self,
+        message: str,
+        *,
+        code: int = 1,
+        data: dict | None = None,
+        errors: list[str] | None = None,
+        status: str = "failed",
+    ) -> NoReturn:
+        """Report a failed result and exit. ``errors`` defaults to the message."""
+        if self.plain:
+            if code == 1:
+                raise SystemExit(message)
+            print(message, file=sys.stderr)
+        else:
+            self.done(message, data=data, ok=False, status=status, errors=errors or [message])
         raise SystemExit(code)
-    if _json_enabled(args):
-        _emit_json(action=action, ok=False, message=message, data=data, errors=[message], status="failed")
-        raise SystemExit(code)
-    raise SystemExit(message if code == 1 else code)
+
+    def fail_process(self, what: str, code: int, tail: str, *, data: dict | None = None) -> NoReturn:
+        """Fail because a Wine or helper process exited with ``code``."""
+        self.fail(f"{what} (exit {code}). Tail:\n{tail}", code=code, data=data, errors=[f"{what} (exit {code})."])
+
+
+def _json_error(args: argparse.Namespace, *, action: str, message: str, code: int = 1, data: dict | None = None) -> NoReturn:
+    Output(args, action).fail(message, code=code, data=data)
 
 
 def _require_wine64(args: argparse.Namespace) -> Path:
     wine_arg = args.wine64 or args.wine
     if not wine_arg:
-        raise SystemExit("--wine64 is required for this command")
+        _json_error(args, action=args.cmd, message="--wine64 is required for this command")
     return resolve_with_fallback(wine_arg, "wine64", ("wine",))
 
 
@@ -315,10 +345,16 @@ def _resolved_graphics_backend(args: argparse.Namespace, *, for_steam: bool) -> 
     return args.graphics_backend
 
 
-def _acquire_library_or_error(args: argparse.Namespace, *, action: str, **activity) -> dict:
+def _acquire_library_or_error(
+    args: argparse.Namespace, *, action: str, session_id: str | None = None, **activity
+) -> dict:
     try:
         return acquire_steam_activity(**activity)
     except RuntimeError as exc:
+        if session_id:
+            # Without this the session stays "launching" and the app's poller
+            # puts the card back into a launch state after showing the error.
+            update_session(session_id, status="failed", message="Another profile's Steam owns this library.")
         message = (
             f"{exc} Close Steam from NASE's current bottle, or use Kill Wine for that bottle if Steam will not exit, "
             "then try again. NASE keeps shared game files locked to one Windows Steam instance during updates."
@@ -376,56 +412,46 @@ def cmd_info(args: argparse.Namespace) -> None:
 
 def cmd_list_compatibility_profiles(args: argparse.Namespace) -> None:
     profiles = list_profiles()
-    if _stream_enabled(args):
-        job_id = _stream_start(action="list-compatibility-profiles", message="Loading compatibility profiles...")
-        _stream_result(
-            action="list-compatibility-profiles",
-            job_id=job_id,
-            ok=True,
-            status="completed",
-            message=f"Found {len(profiles)} compatibility profiles.",
-            data={"profiles": profiles},
-        )
-        return
-    if _json_enabled(args):
-        _emit_json(
-            action="list-compatibility-profiles",
-            ok=True,
-            message="Compatibility profiles listed.",
-            data={"profiles": profiles},
-        )
-        return
-    for profile in profiles:
-        state = "ready" if profile["ready"] else "unavailable"
-        print(f"{profile['id']}\t{state}\t{profile['name']}")
+    Output(args, "list-compatibility-profiles").done(
+        f"Found {len(profiles)} compatibility profiles.",
+        data={"profiles": profiles},
+        text="\n".join(
+            f"{profile['id']}\t{'ready' if profile['ready'] else 'unavailable'}\t{profile['name']}"
+            for profile in profiles
+        ),
+    )
 
 
 def cmd_discover_d3dmetal(args: argparse.Namespace) -> None:
-    action = "discover-d3dmetal"
+    out = Output(args, "discover-d3dmetal")
     installations = discover_gptk_installations(
         configured_wine=Path(args.gptk_wine) if args.gptk_wine else None,
         configured_source=Path(args.d3dmetal_source) if args.d3dmetal_source else None,
     )
     selected = installations[0] if installations else None
-    message = "Found a matched Game Porting Toolkit installation." if selected else "No complete Game Porting Toolkit installation was found."
     data = {
         "installations": installations,
         "gptk_wine_path": selected["wine_path"] if selected else None,
         "d3dmetal_source": selected["d3dmetal_source"] if selected else None,
     }
-    if _json_enabled(args) or _stream_enabled(args):
-        _emit_json(action=action, ok=bool(selected), message=message, data=data, warnings=[] if selected else ["Install Apple's Game Porting Toolkit, then choose its folder in Advanced Settings."])
-        if not selected:
-            raise SystemExit(1)
-        return
-    print(message)
-    if selected:
-        print(f"Wine: {selected['wine_path']}")
-        print(f"D3DMetal: {selected['d3dmetal_source']}")
+    if not selected:
+        out.done(
+            "No complete Game Porting Toolkit installation was found.",
+            ok=False,
+            data=data,
+            warnings=["Install Apple's Game Porting Toolkit, then choose its folder in Advanced Settings."],
+        )
+        raise SystemExit(1)
+    message = "Found a matched Game Porting Toolkit installation."
+    out.done(
+        message,
+        data=data,
+        text=f"{message}\nWine: {selected['wine_path']}\nD3DMetal: {selected['d3dmetal_source']}",
+    )
 
 
 def cmd_import_gptk(args: argparse.Namespace) -> None:
-    action = "import-gptk"
+    out = Output(args, "import-gptk")
     try:
         installed = import_managed_gptk(
             wine_path=Path(args.gptk_wine),
@@ -433,28 +459,24 @@ def cmd_import_gptk(args: argparse.Namespace) -> None:
             confirm_license=args.confirm_license,
         )
     except Exception as exc:
-        _json_error(args, action=action, message=str(exc), code=1)
-        return
+        out.fail(str(exc))
     migrated_profiles = migrate_imported_d3dmetal_profiles(
         old_source=Path(args.d3dmetal_source),
         new_source=Path(installed["d3dmetal_source"]),
         bottles_root=app_support_root() / "bottles",
     )
-    data = {
-        "gptk_wine_path": installed["wine_path"],
-        "d3dmetal_source": installed["d3dmetal_source"],
-        "installation": installed,
-        "migrated_profiles": migrated_profiles,
-    }
-    message = f"Installed a managed Game Porting Toolkit runtime at {installed['installation_root']}."
-    if _json_enabled(args) or _stream_enabled(args):
-        _emit_json(action=action, ok=True, message=message, data=data)
-    else:
-        print(message)
+    out.done(
+        f"Installed a managed Game Porting Toolkit runtime at {installed['installation_root']}.",
+        data={
+            "gptk_wine_path": installed["wine_path"],
+            "d3dmetal_source": installed["d3dmetal_source"],
+            "installation": installed,
+            "migrated_profiles": migrated_profiles,
+        },
+    )
 
 
 def cmd_dependency_status(args: argparse.Namespace) -> None:
-    action = "dependency-status"
     wine = Path(args.wine or args.wine64 or "/opt/homebrew/bin/wine")
     result = dependency_status(
         wine_path=wine,
@@ -463,59 +485,31 @@ def cmd_dependency_status(args: argparse.Namespace) -> None:
         d3dmetal_source=Path(args.d3dmetal_source) if args.d3dmetal_source else None,
     )
     missing = result["missing_required"]
-    message = "Dependencies are ready." if not missing else f"Missing required dependencies: {', '.join(missing)}."
-    if _stream_enabled(args):
-        job_id = _stream_start(action=action, message="Checking host dependencies...")
-        _stream_result(action=action, job_id=job_id, ok=not missing, status="completed" if not missing else "failed", message=message, data=result)
-        return
-    if _json_enabled(args):
-        _emit_json(action=action, ok=not missing, message=message, data=result, status="completed" if not missing else "failed")
-        return
-    for check in result["checks"]:
-        print(f"[{check['status'].upper():4}] {check['name']}: {check['detail']}")
+    Output(args, "dependency-status").done(
+        "Dependencies are ready." if not missing else f"Missing required dependencies: {', '.join(missing)}.",
+        ok=not missing,
+        data=result,
+        text="\n".join(f"[{check['status'].upper():4}] {check['name']}: {check['detail']}" for check in result["checks"]),
+    )
 
 
 def cmd_install_host_dependency(args: argparse.Namespace) -> None:
-    action = "install-host-dependency"
+    out = Output(args, "install-host-dependency")
     managed_runtime_ids = {
         "gstreamer": "gstreamer-1.28.2-macos-universal",
         "wine-stable": "wine-stable-11.0_1-gcenx",
         "winetricks": "winetricks-20260125",
     }
     if args.dependency in managed_runtime_ids:
-        runtime_id = managed_runtime_ids[args.dependency]
-        job_id = _stream_start(action=action, message=f"Installing managed {args.dependency}...") if _stream_enabled(args) else None
-
-        def callback(name: str, status: str, message: str) -> None:
-            if _stream_enabled(args):
-                _stream_step(
-                    action=action,
-                    job_id=job_id or uuid.uuid4().hex,
-                    name=name,
-                    status=status,
-                    message=message,
-                )
-
+        out.start(f"Installing managed {args.dependency}...")
         try:
             installed, notes = install_runtime(
-                runtime_id=runtime_id,
+                runtime_id=managed_runtime_ids[args.dependency],
                 install_into_bottle=False,
-                callback=callback,
+                callback=lambda name, status, message: out.step(name, message, status=status),
             )
         except Exception as exc:
-            message = f"Could not install managed {args.dependency}: {exc}"
-            if _stream_enabled(args):
-                _stream_result(
-                    action=action,
-                    job_id=job_id or uuid.uuid4().hex,
-                    ok=False,
-                    status="failed",
-                    message=message,
-                    errors=[message],
-                )
-                raise SystemExit(1)
-            _json_error(args, action=action, message=message, code=1)
-            return
+            out.fail(f"Could not install managed {args.dependency}: {exc}")
         runtime = {
             "id": installed.id,
             "name": installed.name,
@@ -526,28 +520,16 @@ def cmd_install_host_dependency(args: argparse.Namespace) -> None:
             "installed_at": installed.installed_at,
             "installed": True,
         }
-        message = f"Installed managed {installed.name} {installed.version}."
-        data = {"dependency": args.dependency, "runtime": runtime, "notes": notes}
-        if _stream_enabled(args):
-            _stream_result(
-                action=action,
-                job_id=job_id or uuid.uuid4().hex,
-                ok=True,
-                status="completed",
-                message=message,
-                data=data,
-            )
-        elif _json_enabled(args):
-            _emit_json(action=action, ok=True, message=message, data=data)
-        else:
-            print(message)
+        out.done(
+            f"Installed managed {installed.name} {installed.version}.",
+            data={"dependency": args.dependency, "runtime": runtime, "notes": notes},
+        )
         return
     if args.dependency == "python":
-        message = f"Python {sys.version_info.major}.{sys.version_info.minor} is already provided by the active NASE backend."
-        if _json_enabled(args) or _stream_enabled(args):
-            _emit_json(action=action, ok=True, message=message, data={"dependency": "python", "executable": sys.executable})
-        else:
-            print(message)
+        out.done(
+            f"Python {sys.version_info.major}.{sys.version_info.minor} is already provided by the active NASE backend.",
+            data={"dependency": "python", "executable": sys.executable},
+        )
         return
     try:
         command = dependency_install_command(
@@ -555,40 +537,56 @@ def cmd_install_host_dependency(args: argparse.Namespace) -> None:
             confirm_rosetta_license=args.confirm_rosetta_license,
         )
     except RuntimeError as exc:
-        _json_error(args, action=action, message=str(exc))
-    job_id = _stream_start(action=action, message=f"Installing {args.dependency}...") if _stream_enabled(args) else None
+        out.fail(str(exc))
+    out.start(f"Installing {args.dependency}...")
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=1800, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        message = f"Could not install {args.dependency}: {exc}"
-        if _stream_enabled(args):
-            _stream_result(action=action, job_id=job_id or uuid.uuid4().hex, ok=False, status="failed", message=message, errors=[message])
-            raise SystemExit(1)
-        _json_error(args, action=action, message=message, code=1)
+        out.fail(f"Could not install {args.dependency}: {exc}")
     output = "\n".join(part for part in (result.stdout.strip(), result.stderr.strip()) if part)
     tail = "\n".join(output.splitlines()[-80:])
     if result.returncode != 0:
-        message = f"{args.dependency} installation failed (exit {result.returncode})."
-        if _stream_enabled(args):
-            _stream_result(action=action, job_id=job_id or uuid.uuid4().hex, ok=False, status="failed", message=message, data={"dependency": args.dependency, "tail": tail}, errors=[message])
-            raise SystemExit(result.returncode)
-        _json_error(args, action=action, message=f"{message}\n{tail}", code=result.returncode)
-    message = f"Installed {args.dependency}."
-    data = {"dependency": args.dependency, "command": command, "tail": tail}
-    if _stream_enabled(args):
-        _stream_result(action=action, job_id=job_id or uuid.uuid4().hex, ok=True, status="completed", message=message, data=data)
-    elif _json_enabled(args):
-        _emit_json(action=action, ok=True, message=message, data=data)
+        out.fail(
+            f"{args.dependency} installation failed (exit {result.returncode}).",
+            code=result.returncode,
+            data={"dependency": args.dependency, "tail": tail},
+        )
+    out.done(f"Installed {args.dependency}.", data={"dependency": args.dependency, "command": command, "tail": tail})
+
+
+def _d3dmetal_source(args: argparse.Namespace, graphics_backend: str) -> Path | None:
+    return Path(args.d3dmetal_source) if graphics_backend == "d3dmetal" and args.d3dmetal_source else None
+
+
+def _restore_graphics_payload(args: argparse.Namespace, out: Output, *, bottle, wine64: Path, graphics_backend: str, data: dict) -> None:
+    """Reinstall the selected renderer's DLLs when the caller supplied a source."""
+    if graphics_backend == "dxmt" and args.dxmt_source:
+        label = "DXMT"
+        code, tail = install_dxmt(
+            bottle=bottle,
+            dxmt_source=Path(args.dxmt_source),
+            wine64_path=wine64,
+            allow_unrecommended=getattr(args, "allow_unrecommended_dxmt", False),
+        )
+    elif graphics_backend == "dxvk" and args.dxvk_source:
+        label = "DXVK"
+        code, tail = install_dxvk(bottle=bottle, dxvk_source=Path(args.dxvk_source), dxvk_flavor=args.dxvk_flavor)
+    elif graphics_backend == "d3dmetal" and args.d3dmetal_source:
+        label = "D3DMetal"
+        code, tail = install_d3dmetal(bottle=bottle, d3dmetal_source=Path(args.d3dmetal_source), wine64_path=wine64)
     else:
-        print(message)
+        return
+    if code != 0:
+        out.fail_process(f"{label} restore failed", code, tail, data={**data, "tail": tail})
 
 
 def cmd_setup_compatibility_profile(args: argparse.Namespace) -> None:
     action = "repair-compatibility-profile" if getattr(args, "repair", False) else "setup-compatibility-profile"
+    out = Output(args, action)
     wine64 = _require_wine64(args)
     bottle = _resolve_bottle(args)
     if _is_external_prefix(args):
-        _json_error(args, action=action, message="Compatibility profiles require a dedicated managed bottle.")
+        out.fail("Compatibility profiles require a dedicated managed bottle.")
     profile_id = args.profile
     backend_by_profile = {
         "dxmt-wine-stable-11-v1": "dxmt",
@@ -597,9 +595,9 @@ def cmd_setup_compatibility_profile(args: argparse.Namespace) -> None:
         "plain-wine-v1": "none",
     }
     if profile_id not in backend_by_profile:
-        _json_error(args, action=action, message=f"Unknown compatibility profile: {profile_id}")
+        out.fail(f"Unknown compatibility profile: {profile_id}")
     if getattr(args, "repair", False) and not bottle.root.exists():
-        _json_error(args, action=action, message=f"There is no {bottle.name} profile bottle to repair. Choose Set Up instead.")
+        out.fail(f"There is no {bottle.name} profile bottle to repair. Choose Set Up instead.")
     graphics_backend = backend_by_profile[profile_id]
     setup_total_steps = {"dxmt": 5, "d3dmetal": 8, "dxvk": 10, "none": 5}[graphics_backend]
     source_value = {
@@ -615,7 +613,8 @@ def cmd_setup_compatibility_profile(args: argparse.Namespace) -> None:
     root_existed = bottle.root.exists()
     manifest_path = bottle.root / "compatibility-profile.json"
     original_manifest = manifest_path.read_bytes() if manifest_path.is_file() else None
-    job_id = _stream_start(action=action, message=f"Preparing {profile_id} in {bottle.name}...") if _stream_enabled(args) else None
+    out.start(f"Preparing {profile_id} in {bottle.name}...")
+    job_id = out.job_id
     steps: list[dict[str, str]] = []
     cancelled = False
 
@@ -626,23 +625,16 @@ def cmd_setup_compatibility_profile(args: argparse.Namespace) -> None:
 
     previous_sigterm = signal.signal(signal.SIGTERM, cancel_setup)
 
+    def record_step(name: str, message: str) -> None:
+        steps.append({"name": name, "status": "ok"})
+        out.step(name, message, status="ok", completed_steps=len(steps), total_steps=setup_total_steps)
+
     def run_step(name: str, message: str, operation) -> None:
-        if _stream_enabled(args):
-            _stream_step(action=action, job_id=job_id or uuid.uuid4().hex, name=name, status="started", message=message)
+        out.step(name, message)
         code, tail = operation()
         if code != 0:
             raise RuntimeError(f"{message} failed (exit {code}). Tail:\n{tail}")
-        steps.append({"name": name, "status": "ok"})
-        if _stream_enabled(args):
-            _stream_progress(
-                action=action,
-                job_id=job_id or uuid.uuid4().hex,
-                name=name,
-                status="ok",
-                message=message.replace("...", "") + " complete.",
-                completed_steps=len(steps),
-                total_steps=setup_total_steps,
-            )
+        record_step(name, message.replace("...", "") + " complete.")
 
     try:
         graphics_environment = (
@@ -672,33 +664,18 @@ def cmd_setup_compatibility_profile(args: argparse.Namespace) -> None:
         active_manifest["setup_status"] = "setting-up"
         active_manifest["active_job_id"] = job_id
         active_manifest["setup_started_at"] = time.time()
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_manifest = manifest_path.with_suffix(".tmp")
-        temporary_manifest.write_text(
-            json.dumps(active_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
-        temporary_manifest.replace(manifest_path)
+        atomic_write_json(manifest_path, active_manifest)
         if graphics_backend == "dxvk":
-            manifest_path = bottle.root / "compatibility-profile.json"
             bound_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             install_dxvk_macos_native_runtime(bottle, bound_manifest["dxvk_macos_stack"])
             steps.append({"name": "install-native-runtime", "status": "ok"})
         if graphics_backend == "d3dmetal" and graphics_source is not None:
             native_dependency = prepare_sikarugir_native_dependencies(wine64, graphics_source)
-            steps.append({"name": "verify-native-dependencies", "status": "ok"})
-            if _stream_enabled(args):
-                _stream_progress(
-                    action=action,
-                    job_id=job_id or uuid.uuid4().hex,
-                    name="verify-native-dependencies",
-                    status="ok",
-                    message=(
-                        f"Verified {native_dependency['verified_library_count']} native libraries, including "
-                        f"{native_dependency['dependency']} ({native_dependency['sha256'][:12]}...)."
-                    ),
-                    completed_steps=len(steps),
-                    total_steps=setup_total_steps,
-                )
+            record_step(
+                "verify-native-dependencies",
+                f"Verified {native_dependency['verified_library_count']} native libraries, including "
+                f"{native_dependency['dependency']} ({native_dependency['sha256'][:12]}...).",
+            )
         ensure_bottle_dirs(bottle)
         ensure_shared_steam(bottle)
         steam_exe = bottle.drive_c / "Program Files (x86)" / "Steam" / "Steam.exe"
@@ -787,8 +764,7 @@ def cmd_setup_compatibility_profile(args: argparse.Namespace) -> None:
             )
         else:
             steps.append({"name": "install-graphics", "status": "ok"})
-        if _stream_enabled(args):
-            _stream_step(action=action, job_id=job_id or uuid.uuid4().hex, name="attach-libraries", status="started", message="Attaching existing Steam libraries...")
+        out.step("attach-libraries", "Attaching existing Steam libraries...")
         attachment = attach_registered_libraries(bottle, refresh_registry(bottle))
         steps.append({"name": "attach-libraries", "status": "ok"})
         if graphics_backend == "d3dmetal":
@@ -844,52 +820,34 @@ def cmd_setup_compatibility_profile(args: argparse.Namespace) -> None:
             failed_manifest["last_failed_job"] = job_id
             failed_manifest["last_failure"] = message
             failed_manifest["failed_at"] = time.time()
-            temporary = manifest_path.with_suffix(".tmp")
-            temporary.write_text(json.dumps(failed_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-            temporary.replace(manifest_path)
-        status = "cancelled" if cancelled else "failed"
-        if _stream_enabled(args):
-            _stream_result(
-                action=action,
-                job_id=job_id or uuid.uuid4().hex,
-                ok=False,
-                status=status,
-                message=message,
-                data={"profile_id": profile_id, "bottle": bottle.name, "steps": steps, "rollback": rollback},
-                errors=[message],
-            )
-            raise SystemExit(1)
-        _json_error(args, action=action, message=message, code=1, data={"rollback": rollback})
+            atomic_write_json(manifest_path, failed_manifest)
+        out.fail(
+            message,
+            data={"profile_id": profile_id, "bottle": bottle.name, "steps": steps, "rollback": rollback},
+            status="cancelled" if cancelled else "failed",
+        )
     finally:
         signal.signal(signal.SIGTERM, previous_sigterm)
 
-    message = f"{manifest['profile']['name']} is ready in {bottle.name}."
-    data = {"profile": manifest["profile"], "bottle": bottle.name, "manifest": manifest, "steps": steps, "library_attachment": attachment}
-    if _stream_enabled(args):
-        _stream_result(action=action, job_id=job_id or uuid.uuid4().hex, ok=True, status="completed", message=message, data=data)
-    elif _json_enabled(args):
-        _emit_json(action=action, ok=True, message=message, data=data)
-    else:
-        print(message)
+    out.done(
+        f"{manifest['profile']['name']} is ready in {bottle.name}.",
+        data={"profile": manifest["profile"], "bottle": bottle.name, "manifest": manifest, "steps": steps, "library_attachment": attachment},
+    )
 
 
 def cmd_reset_compatibility_profile(args: argparse.Namespace) -> None:
-    action = "reset-compatibility-profile"
+    out = Output(args, "reset-compatibility-profile")
     bottle = _resolve_bottle(args)
     if _is_external_prefix(args):
-        _json_error(args, action=action, message="Only managed profile bottles can be reset.")
+        out.fail("Only managed profile bottles can be reset.")
     profile = PROFILES.get(args.profile)
     if profile is None:
-        _json_error(args, action=action, message=f"Unknown compatibility profile: {args.profile}")
+        out.fail(f"Unknown compatibility profile: {args.profile}")
     expected_suffix = f"-{profile.bottle_suffix}"
     if not bottle.name.endswith(expected_suffix):
-        _json_error(
-            args,
-            action=action,
-            message=f"Refusing to reset {bottle.name}; the {profile.name} bottle must end in {expected_suffix}.",
-        )
+        out.fail(f"Refusing to reset {bottle.name}; the {profile.name} bottle must end in {expected_suffix}.")
     if not args.confirm:
-        _json_error(args, action=action, message="Reset requires explicit confirmation.")
+        out.fail("Reset requires explicit confirmation.")
     if not bottle.root.exists():
         message = f"{profile.name} is already reset."
     else:
@@ -897,57 +855,44 @@ def cmd_reset_compatibility_profile(args: argparse.Namespace) -> None:
         local_manifests = sorted(primary_steamapps.glob("appmanifest_*.acf"))
         if local_manifests:
             appids = ", ".join(path.stem.removeprefix("appmanifest_") for path in local_manifests)
-            _json_error(
-                args,
-                action=action,
-                message=(
-                    f"Refusing to delete {bottle.name}: it still contains locally stored Steam games "
-                    f"({appids}). Move them to the NASE Shared Library in Steam's Storage settings, "
-                    "then try again."
-                ),
+            out.fail(
+                f"Refusing to delete {bottle.name}: it still contains locally stored Steam games "
+                f"({appids}). Move them to the NASE Shared Library in Steam's Storage settings, "
+                "then try again."
             )
         wine64 = _require_wine64(args)
         kill_wine_processes(bottle=bottle, wine64_path=wine64)
         shutil.rmtree(bottle.root)
         message = f"Removed the dedicated {profile.name} bottle. Shared Steam game files were not removed."
-    data = {"profile": args.profile, "bottle": bottle.name, "removed": not bottle.root.exists()}
-    if _stream_enabled(args):
-        job_id = _stream_start(action=action, message=message)
-        _stream_result(action=action, job_id=job_id, ok=True, status="completed", message=message, data=data)
-    elif _json_enabled(args):
-        _emit_json(action=action, ok=True, message=message, data=data)
-    else:
-        print(message)
+    out.done(message, data={"profile": args.profile, "bottle": bottle.name, "removed": not bottle.root.exists()})
 
 
 def cmd_attach_steam_library(args: argparse.Namespace) -> None:
-    action = "attach-steam-library"
+    out = Output(args, "attach-steam-library")
     bottle = _resolve_bottle(args)
     if _is_external_prefix(args):
-        _json_error(args, action=action, message="Shared libraries can only be attached to a managed profile bottle.")
+        out.fail("Shared libraries can only be attached to a managed profile bottle.")
     library_ids = set(args.library_id or [])
     if not args.all and not library_ids:
-        _json_error(args, action=action, message="Choose --all or provide at least one --library-id.")
-    job_id = _stream_start(action=action, message=f"Attaching shared Steam libraries to {bottle.name}...") if _stream_enabled(args) else None
+        out.fail("Choose --all or provide at least one --library-id.")
+    out.start(f"Attaching shared Steam libraries to {bottle.name}...")
     try:
         registry = refresh_registry(bottle)
         result = attach_registered_libraries(bottle, registry, library_ids=None if args.all else library_ids)
         refreshed = refresh_registry(bottle)
     except RuntimeError as exc:
-        message = str(exc)
-        if _stream_enabled(args):
-            _stream_result(action=action, job_id=job_id or uuid.uuid4().hex, ok=False, status="failed", message=message, errors=[message])
-            raise SystemExit(1)
-        _json_error(args, action=action, message=message, code=1)
+        out.fail(str(exc))
     count = len(result["attached"])
-    message = f"Attached {count} shared Steam library location(s) to {bottle.name}." if count else f"All selected Steam libraries are already attached to {bottle.name}."
-    data = {**result, "registry_path": str(app_support_root() / "steam-libraries.json"), "library_count": len(refreshed["libraries"])}
-    if _stream_enabled(args):
-        _stream_result(action=action, job_id=job_id or uuid.uuid4().hex, ok=True, status="completed", message=message, data=data)
-    elif _json_enabled(args):
-        _emit_json(action=action, ok=True, message=message, data=data)
-    else:
-        print(message)
+    out.done(
+        f"Attached {count} shared Steam library location(s) to {bottle.name}."
+        if count
+        else f"All selected Steam libraries are already attached to {bottle.name}.",
+        data={
+            **result,
+            "registry_path": str(app_support_root() / "steam-libraries.json"),
+            "library_count": len(refreshed["libraries"]),
+        },
+    )
 
 
 def cmd_init(args: argparse.Namespace) -> None:
@@ -976,35 +921,33 @@ def cmd_install_steam(args: argparse.Namespace) -> None:
 
 
 def cmd_run_steam(args: argparse.Namespace) -> None:
+    out = Output(args, "run-steam")
     wine64 = _require_wine64(args)
     bottle = _resolve_bottle(args)
     registry = refresh_registry(bottle)
     acquired_library_ids: list[str] = []
-    try:
-        for library in registry.get("libraries", []):
-            library_id = str(library.get("library_id") or "")
-            references = library.get("referenced_by") or []
-            attached_here = any(str(reference.get("prefix") or "") == str(bottle.prefix) for reference in references)
-            if not library.get("exists") or not library_id or not attached_here:
-                continue
-            _acquire_library_or_error(
-                args,
-                action="run-steam",
-                library_id=library_id,
-                prefix=str(bottle.prefix),
-                bottle=bottle.name,
-                profile_id=f"steam-{bottle.name}",
-                appid="*",
-            )
-            acquired_library_ids.append(library_id)
-    except Exception:
-        # Keep successful reservations: they may belong to a concurrent launch
-        # in this same prefix. Unused reservations expire after the short launch window.
-        raise
+    # A failed reservation leaves earlier ones in place: they may belong to a
+    # concurrent launch in this same prefix, and unused reservations expire
+    # after the short launch window.
+    for library in registry.get("libraries", []):
+        library_id = str(library.get("library_id") or "")
+        references = library.get("referenced_by") or []
+        attached_here = any(str(reference.get("prefix") or "") == str(bottle.prefix) for reference in references)
+        if not library.get("exists") or not library_id or not attached_here:
+            continue
+        _acquire_library_or_error(
+            args,
+            action="run-steam",
+            library_id=library_id,
+            prefix=str(bottle.prefix),
+            bottle=bottle.name,
+            profile_id=f"steam-{bottle.name}",
+            appid="*",
+        )
+        acquired_library_ids.append(library_id)
     mark_steam_opened_by_user(str(bottle.prefix))
-    job_id = _stream_start(action="run-steam", message=f"Launching Steam in {_target_label(args, bottle)}...") if _stream_enabled(args) else None
-    if not _json_enabled(args):
-        print(f"Launching Steam in {_target_label(args, bottle)}...")
+    target = _target_label(args, bottle)
+    out.start(f"Launching Steam in {target}...")
     code, tail = run_steam(
         bottle=bottle,
         wine64_path=wine64,
@@ -1014,123 +957,44 @@ def cmd_run_steam(args: argparse.Namespace) -> None:
         graphics_backend=_resolved_graphics_backend(args, for_steam=True),
         restart_existing=not steam_is_running(str(bottle.prefix)),
     )
+    data = {"target": target, "tail": tail}
     if code != 0:
         if not steam_is_running(str(bottle.prefix)):
             for library_id in acquired_library_ids:
                 release_steam_activity(library_id=library_id, prefix=str(bottle.prefix))
-        if _stream_enabled(args):
-            _stream_result(
-                action="run-steam",
-                job_id=job_id or uuid.uuid4().hex,
-                ok=False,
-                status="failed",
-                message=f"Steam launch failed (exit {code}). Tail:\n{tail}",
-                data={"target": _target_label(args, bottle), "tail": tail},
-                errors=[f"Steam launch failed (exit {code})."],
-            )
-            raise SystemExit(code)
-        _json_error(args, action="run-steam", message=f"Steam launch failed (exit {code}). Tail:\n{tail}", code=code)
-    if args.no_wait:
-        if _stream_enabled(args):
-            _stream_result(
-                action="run-steam",
-                job_id=job_id or uuid.uuid4().hex,
-                ok=True,
-                status="completed",
-                message="Steam launched.",
-                data={"target": _target_label(args, bottle), "tail": tail},
-            )
-            return
-        if _json_enabled(args):
-            _emit_json(
-                action="run-steam",
-                ok=True,
-                message="Steam launched.",
-                data={"target": _target_label(args, bottle), "tail": tail},
-                status="completed",
-            )
-        else:
-            print("Steam launched.")
-    else:
+        out.fail_process("Steam launch failed", code, tail, data=data)
+    if not args.no_wait:
         for library_id in acquired_library_ids:
             release_steam_activity(library_id=library_id, prefix=str(bottle.prefix))
-        if _stream_enabled(args):
-            _stream_result(
-                action="run-steam",
-                job_id=job_id or uuid.uuid4().hex,
-                ok=True,
-                status="completed",
-                message="Steam exited.",
-                data={"target": _target_label(args, bottle), "tail": tail},
-            )
-            return
-        if _json_enabled(args):
-            _emit_json(
-                action="run-steam",
-                ok=True,
-                message="Steam exited.",
-                data={"target": _target_label(args, bottle), "tail": tail},
-            )
-        else:
-            print("Steam exited.")
+    out.done("Steam launched." if args.no_wait else "Steam exited.", data=data)
 
 
 def cmd_winecfg(args: argparse.Namespace) -> None:
+    out = Output(args, "winecfg")
     wine64 = _require_wine64(args)
     bottle = _resolve_bottle(args)
-    job_id = _stream_start(action="winecfg", message=f"Opening winecfg for {_target_label(args, bottle)}...") if _stream_enabled(args) else None
-    if not _json_enabled(args):
-        print(f"Opening winecfg for {_target_label(args, bottle)}...")
-
+    target = _target_label(args, bottle)
+    out.start(f"Opening winecfg for {target}...")
     code, tail = run_logged(
         cmd=[str(wine64), "winecfg"],
         env={"WINEPREFIX": str(bottle.prefix), "WINEDEBUG": "-all"},
         log_file=bottle.logs / "05_winecfg.log",
     )
+    data = {"target": target, "tail": tail}
     if code != 0:
-        if _stream_enabled(args):
-            _stream_result(
-                action="winecfg",
-                job_id=job_id or uuid.uuid4().hex,
-                ok=False,
-                status="failed",
-                message=f"winecfg failed (exit {code}). Tail:\n{tail}",
-                data={"target": _target_label(args, bottle), "tail": tail},
-                errors=[f"winecfg failed (exit {code})."],
-            )
-            raise SystemExit(code)
-        _json_error(args, action="winecfg", message=f"winecfg failed (exit {code}). Tail:\n{tail}", code=code)
-
-    if _stream_enabled(args):
-        _stream_result(
-            action="winecfg",
-            job_id=job_id or uuid.uuid4().hex,
-            ok=True,
-            status="completed",
-            message="winecfg exited.",
-            data={"target": _target_label(args, bottle), "tail": tail},
-        )
-        return
-    if _json_enabled(args):
-        _emit_json(
-            action="winecfg",
-            ok=True,
-            message="winecfg exited.",
-            data={"target": _target_label(args, bottle), "tail": tail},
-            status="completed",
-        )
-        return
-    print("winecfg exited.")
+        out.fail_process("winecfg failed", code, tail, data=data)
+    out.done("winecfg exited.", data=data)
 
 
 def cmd_run_winetricks(args: argparse.Namespace) -> None:
+    out = Output(args, "winetricks")
     bottle = _resolve_bottle(args)
     wine64 = _require_wine64(args)
     winetricks = _resolve_winetricks(args.winetricks)
     verbs = [verb.strip() for verb in args.verbs.split(",") if verb.strip()]
     if not verbs:
-        _json_error(args, action="winetricks", message="At least one winetricks verb is required")
-    job_id = _stream_start(action="winetricks", message=f"Running winetricks for {', '.join(verbs)}...") if _stream_enabled(args) else None
+        out.fail("At least one winetricks verb is required")
+    out.start(f"Running winetricks for {', '.join(verbs)}...")
     code, tail = run_winetricks(
         bottle=bottle,
         winetricks_path=winetricks,
@@ -1138,90 +1002,32 @@ def cmd_run_winetricks(args: argparse.Namespace) -> None:
         unattended=not args.interactive,
         wine_path=wine64,
     )
+    data = {"verbs": verbs, "target": _target_label(args, bottle), "tail": tail}
     if code != 0:
-        if _stream_enabled(args):
-            _stream_result(
-                action="winetricks",
-                job_id=job_id or uuid.uuid4().hex,
-                ok=False,
-                status="failed",
-                message=f"winetricks failed (exit {code}). Tail:\n{tail}",
-                data={"verbs": verbs, "target": _target_label(args, bottle), "tail": tail},
-                errors=[f"winetricks failed (exit {code})."],
-            )
-            raise SystemExit(code)
-        _json_error(args, action="winetricks", message=f"winetricks failed (exit {code}). Tail:\n{tail}", code=code)
-    if _stream_enabled(args):
-        _stream_result(
-            action="winetricks",
-            job_id=job_id or uuid.uuid4().hex,
-            ok=True,
-            status="completed",
-            message="Winetricks finished.",
-            data={"verbs": verbs, "target": _target_label(args, bottle), "tail": tail},
-        )
-        return
-    if _json_enabled(args):
-        _emit_json(
-            action="winetricks",
-            ok=True,
-            message="Winetricks finished.",
-            data={"verbs": verbs, "target": _target_label(args, bottle), "tail": tail},
-            status="completed",
-        )
+        out.fail_process("winetricks failed", code, tail, data=data)
+    out.done("Winetricks finished.", data=data)
 
 
 def cmd_kill_wine(args: argparse.Namespace) -> None:
+    out = Output(args, "kill-wine")
     bottle = _resolve_bottle(args)
     all_managed = bool(getattr(args, "all_managed", False))
     target = "all NASE bottles" if all_managed else _target_label(args, bottle)
-    job_id = _stream_start(action="kill-wine", message=f"Killing Wine processes for {target}...") if _stream_enabled(args) else None
-    if not _json_enabled(args):
-        print(f"Killing Wine processes for {target}...")
-
+    out.start(f"Killing Wine processes for {target}...")
     if all_managed:
         code, tail, targets = kill_nase_wine_processes(current_bottle=bottle)
     else:
         wine64 = _require_wine64(args)
         code, tail = kill_wine_processes(bottle=bottle, wine64_path=wine64)
         targets = [str(bottle.prefix)]
+    data = {"target": target, "targets": targets, "tail": tail}
     if code != 0:
-        if _stream_enabled(args):
-            _stream_result(
-                action="kill-wine",
-                job_id=job_id or uuid.uuid4().hex,
-                ok=False,
-                status="failed",
-                message=f"Failed to stop Wine processes (exit {code}). Tail:\n{tail}",
-                data={"target": target, "targets": targets, "tail": tail},
-                errors=[f"Failed to stop Wine processes (exit {code})."],
-            )
-            raise SystemExit(code)
-        _json_error(args, action="kill-wine", message=f"Failed to stop Wine processes (exit {code}). Tail:\n{tail}", code=code)
-
-    if _stream_enabled(args):
-        _stream_result(
-            action="kill-wine",
-            job_id=job_id or uuid.uuid4().hex,
-            ok=True,
-            status="completed",
-            message="Stopped Wine processes.",
-            data={"target": target, "targets": targets, "tail": tail},
-        )
-        return
-    if _json_enabled(args):
-        _emit_json(
-            action="kill-wine",
-            ok=True,
-            message="Stopped Wine processes.",
-            data={"target": target, "targets": targets, "tail": tail},
-            status="completed",
-        )
-        return
-    print("Stopped Wine processes.")
+        out.fail_process("Failed to stop Wine processes", code, tail, data=data)
+    out.done("Stopped Wine processes.", data=data)
 
 
 def cmd_list_sessions(args: argparse.Namespace) -> None:
+    out = Output(args, "list-sessions")
     # The UI polls this command continuously to decide whether a game is still
     # running. An unexpected failure here must stay a structured result: a
     # traceback plus a non-zero exit is invisible to the app and freezes every
@@ -1229,134 +1035,87 @@ def cmd_list_sessions(args: argparse.Namespace) -> None:
     try:
         sessions = reconcile_sessions()
     except Exception as exc:  # noqa: BLE001 - the poller must never see a traceback
-        message = f"Launch sessions could not be reconciled: {exc}"
-        if _stream_enabled(args):
-            _stream_result(
-                action="list-sessions",
-                job_id=_stream_start(action="list-sessions", message="Reconciling launch sessions..."),
-                ok=False,
-                status="failed",
-                message=message,
-                errors=[str(exc)],
-                data={"sessions": []},
-            )
-            return
-        if _json_enabled(args):
-            _emit_json(action="list-sessions", ok=False, message=message, data={"sessions": []}, status="failed")
-            return
-        print(message)
-        return
-    active_only = not getattr(args, "all", False)
-    if active_only:
-        sessions = [session for session in sessions if session.get("status") in {"launching", "running", "stopping"}]
-    if _stream_enabled(args):
-        job_id = _stream_start(action="list-sessions", message="Reconciling launch sessions...")
-        _stream_result(
-            action="list-sessions",
-            job_id=job_id,
-            ok=True,
-            status="completed",
-            message=f"Found {len(sessions)} launch session(s).",
-            data={"sessions": sessions},
+        out.done(
+            f"Launch sessions could not be reconciled: {exc}",
+            ok=False,
+            data={"sessions": []},
+            errors=[str(exc)],
         )
         return
-    if _json_enabled(args):
-        _emit_json(action="list-sessions", ok=True, message="Launch sessions reconciled.", data={"sessions": sessions})
-        return
-    for session in sessions:
-        print(f"{session.get('session_id')}\t{session.get('status')}\t{session.get('game')}\t{session.get('bottle')}")
-
-
-def cmd_list_jobs(args: argparse.Namespace) -> None:
-    action = "list-jobs"
-    jobs = list_jobs(limit=args.limit)
-    message = f"Loaded {len(jobs)} backend job record(s)."
-    data = {"jobs": jobs}
-    if _stream_enabled(args):
-        job_id = _stream_start(action=action, message="Loading backend job history...")
-        _stream_result(action=action, job_id=job_id, ok=True, status="completed", message=message, data=data)
-    elif _json_enabled(args):
-        _emit_json(action=action, ok=True, message=message, data=data)
-    else:
-        print(json.dumps(jobs, indent=2))
-
-
-def cmd_cancel_job(args: argparse.Namespace) -> None:
-    action = "cancel-job"
-    try:
-        job = cancel_job(args.job_id)
-    except (FileNotFoundError, OSError, ValueError) as exc:
-        _json_error(args, action=action, message=str(exc))
-    message = f"Cancellation state for {args.job_id}: {job['status']}."
-    data = {"job": job}
-    if _stream_enabled(args):
-        query_id = _stream_start(action=action, message=f"Cancelling {args.job_id}...")
-        _stream_result(action=action, job_id=query_id, ok=True, status="completed", message=message, data=data)
-    elif _json_enabled(args):
-        _emit_json(action=action, ok=True, message=message, data=data)
-    else:
-        print(message)
-
-
-def _identity_result(args: argparse.Namespace, *, action: str, message: str, data: dict) -> None:
-    if _stream_enabled(args):
-        job_id = _stream_start(action=action, message=message)
-        _stream_result(action=action, job_id=job_id, ok=True, status="completed", message=message, data=data)
-    elif _json_enabled(args):
-        _emit_json(action=action, ok=True, message=message, data=data)
-    else:
-        print(message)
-
-
-def cmd_steam_identity_status(args: argparse.Namespace) -> None:
-    _identity_result(
-        args,
-        action="steam-identity-status",
-        message="Shared Steam login status loaded.",
-        data=steam_identity_status(),
+    if not getattr(args, "all", False):
+        sessions = [session for session in sessions if session.get("status") in {"launching", "running", "stopping"}]
+    out.done(
+        f"Found {len(sessions)} launch session(s).",
+        data={"sessions": sessions},
+        text="\n".join(
+            f"{session.get('session_id')}\t{session.get('status')}\t{session.get('game')}\t{session.get('bottle')}"
+            for session in sessions
+        ),
     )
 
 
+def cmd_list_jobs(args: argparse.Namespace) -> None:
+    jobs = list_jobs(limit=args.limit)
+    Output(args, "list-jobs").done(
+        f"Loaded {len(jobs)} backend job record(s).",
+        data={"jobs": jobs},
+        text=json.dumps(jobs, indent=2),
+    )
+
+
+def cmd_cancel_job(args: argparse.Namespace) -> None:
+    out = Output(args, "cancel-job")
+    try:
+        job = cancel_job(args.job_id)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        out.fail(str(exc))
+    out.done(f"Cancellation state for {args.job_id}: {job['status']}.", data={"job": job})
+
+
+def cmd_steam_identity_status(args: argparse.Namespace) -> None:
+    Output(args, "steam-identity-status").done("Shared Steam login status loaded.", data=steam_identity_status())
+
+
 def cmd_capture_steam_identity(args: argparse.Namespace) -> None:
-    action = "capture-steam-identity"
+    out = Output(args, "capture-steam-identity")
     if not args.confirm:
-        _json_error(args, action=action, message="Capture requires --confirm after Steam is fully closed.")
+        out.fail("Capture requires --confirm after Steam is fully closed.")
     try:
         data = capture_steam_identity(bottle_paths(args.source_bottle))
     except (OSError, RuntimeError, ValueError) as exc:
-        _json_error(args, action=action, message=str(exc))
-    _identity_result(args, action=action, message=f"Protected Steam login captured from {args.source_bottle}.", data=data)
+        out.fail(str(exc))
+    out.done(f"Protected Steam login captured from {args.source_bottle}.", data=data)
 
 
 def cmd_provision_steam_identity(args: argparse.Namespace) -> None:
-    action = "provision-steam-identity"
+    out = Output(args, "provision-steam-identity")
     try:
         data = provision_steam_identity(bottle_paths(args.target_bottle))
     except (OSError, RuntimeError, ValueError, KeyError) as exc:
-        _json_error(args, action=action, message=str(exc))
-    _identity_result(args, action=action, message=f"Shared Steam login applied to {args.target_bottle}.", data=data)
+        out.fail(str(exc))
+    out.done(f"Shared Steam login applied to {args.target_bottle}.", data=data)
 
 
 def cmd_forget_steam_identity(args: argparse.Namespace) -> None:
-    action = "forget-steam-identity"
+    out = Output(args, "forget-steam-identity")
     if not args.confirm:
-        _json_error(args, action=action, message="Forgetting the protected login requires --confirm.")
+        out.fail("Forgetting the protected login requires --confirm.")
     try:
         data = forget_steam_identity()
     except (OSError, RuntimeError) as exc:
-        _json_error(args, action=action, message=str(exc))
-    _identity_result(args, action=action, message="NASE forgot the protected Steam login. Existing profile logins were unchanged.", data=data)
+        out.fail(str(exc))
+    out.done("NASE forgot the protected Steam login. Existing profile logins were unchanged.", data=data)
 
 
 def cmd_sign_out_steam_profile(args: argparse.Namespace) -> None:
-    action = "sign-out-steam-profile"
+    out = Output(args, "sign-out-steam-profile")
     if not args.confirm:
-        _json_error(args, action=action, message="Signing out this profile requires --confirm.")
+        out.fail("Signing out this profile requires --confirm.")
     try:
         data = sign_out_steam_profile(bottle_paths(args.target_bottle))
     except (OSError, RuntimeError, ValueError) as exc:
-        _json_error(args, action=action, message=str(exc))
-    _identity_result(args, action=action, message=f"Signed out Steam in {args.target_bottle} only.", data=data)
+        out.fail(str(exc))
+    out.done(f"Signed out Steam in {args.target_bottle} only.", data=data)
 
 
 def _epic_source(args: argparse.Namespace) -> EpicSource:
@@ -1372,75 +1131,70 @@ def _game_source(args: argparse.Namespace):
 
 
 def cmd_source_status(args: argparse.Namespace) -> None:
-    source = _game_source(args)
-    data = {"source_status": source.status().as_dict()}
-    _identity_result(args, action="source-status", message=f"{args.source.upper()} source status loaded.", data=data)
+    status = _game_source(args).status().as_dict()
+    Output(args, "source-status").done(f"{args.source.upper()} source status loaded.", data={"source_status": status})
 
 
 def cmd_list_source_games(args: argparse.Namespace) -> None:
-    action = "list-source-games"
-    source = _game_source(args)
+    out = Output(args, "list-source-games")
     try:
-        games = [game.as_dict() for game in source.list_games(force_refresh=args.force_refresh)]
+        games = [game.as_dict() for game in _game_source(args).list_games(force_refresh=args.force_refresh)]
     except (OSError, RuntimeError, ValueError) as exc:
-        _json_error(args, action=action, message=str(exc))
-    _identity_result(
-        args,
-        action=action,
-        message=f"Found {len(games)} {args.source.upper()} library item(s).",
+        out.fail(str(exc))
+    out.done(
+        f"Found {len(games)} {args.source.upper()} library item(s).",
         data={"source_id": args.source, "source_games": games},
     )
 
 
-def cmd_epic_auth(args: argparse.Namespace) -> None:
-    action = "epic-auth"
-    authorization_code = sys.stdin.readline().strip() if args.authorization_code_stdin else args.authorization_code
+def _source_account_command(args: argparse.Namespace, action: str, operation, message: str) -> None:
+    out = Output(args, action)
     try:
-        status = _epic_source(args).authenticate(authorization_code=authorization_code or "")
+        status = operation()
     except (OSError, RuntimeError, ValueError) as exc:
-        _json_error(args, action=action, message=str(exc))
-    _identity_result(args, action=action, message="Epic Games account connected.", data={"source_status": status.as_dict()})
+        out.fail(str(exc))
+    out.done(message, data={"source_status": status.as_dict()})
+
+
+def cmd_epic_auth(args: argparse.Namespace) -> None:
+    code = sys.stdin.readline().strip() if args.authorization_code_stdin else args.authorization_code
+    _source_account_command(
+        args,
+        "epic-auth",
+        lambda: _epic_source(args).authenticate(authorization_code=code or ""),
+        "Epic Games account connected.",
+    )
 
 
 def cmd_epic_logout(args: argparse.Namespace) -> None:
-    action = "epic-logout"
     if not args.confirm:
-        _json_error(args, action=action, message="Epic sign-out requires --confirm.")
-    try:
-        status = _epic_source(args).sign_out()
-    except (OSError, RuntimeError, ValueError) as exc:
-        _json_error(args, action=action, message=str(exc))
-    _identity_result(args, action=action, message="Epic Games account signed out.", data={"source_status": status.as_dict()})
+        _json_error(args, action="epic-logout", message="Epic sign-out requires --confirm.")
+    _source_account_command(args, "epic-logout", lambda: _epic_source(args).sign_out(), "Epic Games account signed out.")
 
 
 def cmd_gog_auth(args: argparse.Namespace) -> None:
-    action = "gog-auth"
-    authorization_code = sys.stdin.readline().strip() if args.authorization_code_stdin else args.authorization_code
-    try:
-        status = _gog_source(args).authenticate(authorization_code=authorization_code or "")
-    except (OSError, RuntimeError, ValueError) as exc:
-        _json_error(args, action=action, message=str(exc))
-    _identity_result(args, action=action, message="GOG account connected.", data={"source_status": status.as_dict()})
+    code = sys.stdin.readline().strip() if args.authorization_code_stdin else args.authorization_code
+    _source_account_command(
+        args,
+        "gog-auth",
+        lambda: _gog_source(args).authenticate(authorization_code=code or ""),
+        "GOG account connected.",
+    )
 
 
 def cmd_gog_logout(args: argparse.Namespace) -> None:
-    action = "gog-logout"
     if not args.confirm:
-        _json_error(args, action=action, message="GOG sign-out requires --confirm.")
-    try:
-        status = _gog_source(args).sign_out()
-    except (OSError, RuntimeError, ValueError) as exc:
-        _json_error(args, action=action, message=str(exc))
-    _identity_result(args, action=action, message="GOG account signed out.", data={"source_status": status.as_dict()})
+        _json_error(args, action="gog-logout", message="GOG sign-out requires --confirm.")
+    _source_account_command(args, "gog-logout", lambda: _gog_source(args).sign_out(), "GOG account signed out.")
 
 
 def cmd_source_game_action(args: argparse.Namespace) -> None:
-    action = f"{args.source}-{args.operation}"
+    out = Output(args, f"{args.source}-{args.operation}")
     source = _game_source(args)
     source_name = "Epic" if args.source == "epic" else "GOG"
     if args.operation == "uninstall" and not args.confirm:
-        _json_error(args, action=action, message=f"{source_name} uninstall requires --confirm.")
-    job_id = _stream_start(action=action, message=f"{source_name} {args.operation} started for {args.game_id}...") if _stream_enabled(args) else None
+        out.fail(f"{source_name} uninstall requires --confirm.")
+    out.start(f"{source_name} {args.operation} started for {args.game_id}...")
     try:
         if args.operation == "install":
             destination = Path(args.install_root).expanduser() if args.install_root else app_support_root() / "game-libraries" / args.source
@@ -1454,34 +1208,19 @@ def cmd_source_game_action(args: argparse.Namespace) -> None:
         else:
             source.uninstall(args.game_id, keep_files=args.keep_files)
     except (OSError, RuntimeError, ValueError) as exc:
-        if job_id:
-            _stream_result(action=action, job_id=job_id, ok=False, status="failed", message=str(exc), errors=[str(exc)])
-            raise SystemExit(1)
-        _json_error(args, action=action, message=str(exc))
-    if job_id:
-        _stream_result(
-            action=action,
-            job_id=job_id,
-            ok=True,
-            status="completed",
-            message=f"{source_name} {args.operation} completed for {args.game_id}.",
-            data={"source_id": args.source, "game_id": args.game_id, "operation": args.operation},
-        )
-        return
-    _identity_result(
-        args,
-        action=action,
-        message=f"{source_name} {args.operation} completed for {args.game_id}.",
+        out.fail(str(exc))
+    out.done(
+        f"{source_name} {args.operation} completed for {args.game_id}.",
         data={"source_id": args.source, "game_id": args.game_id, "operation": args.operation},
     )
 
 
 def cmd_launch_source_game(args: argparse.Namespace) -> None:
-    action = "launch-source-game"
+    out = Output(args, "launch-source-game")
     bottle = _resolve_bottle(args)
     wine_path = _require_wine64(args)
     graphics_backend = _resolved_graphics_backend(args, for_steam=False)
-    profile_id = _bind_launch_profile(args, action=action, bottle=bottle, wine_path=wine_path, graphics_backend=graphics_backend)
+    profile_id = _bind_launch_profile(args, action=out.action, bottle=bottle, wine_path=wine_path, graphics_backend=graphics_backend)
     graphics_source_value = {
         "dxmt": args.dxmt_source,
         "dxvk": args.dxvk_source,
@@ -1489,7 +1228,7 @@ def cmd_launch_source_game(args: argparse.Namespace) -> None:
         "none": None,
     }[graphics_backend]
     source_name = "Epic" if args.source == "epic" else "GOG"
-    job_id = _stream_start(action=action, message=f"Preparing {source_name} launch for {args.game_id}...") if _stream_enabled(args) else None
+    out.start(f"Preparing {source_name} launch for {args.game_id}...")
     source = _game_source(args)
     # Store launches are tracked exactly like Steam and Wine launches. Without a
     # session record the UI has nothing that can ever contradict "Running", so
@@ -1525,462 +1264,239 @@ def cmd_launch_source_game(args: argparse.Namespace) -> None:
         )
     except (OSError, RuntimeError, ValueError) as exc:
         update_session(launch_session["session_id"], status="failed", message=f"{source_name} launch failed.")
-        if job_id:
-            _stream_result(action=action, job_id=job_id, ok=False, status="failed", message=str(exc), errors=[str(exc)])
-            raise SystemExit(1)
-        _json_error(args, action=action, message=str(exc))
-    launch_session = next(
-        (item for item in reconcile_sessions() if item.get("session_id") == launch_session["session_id"]),
-        launch_session,
-    )
-    data = {
-        "source_id": args.source,
-        "game_id": args.game_id,
-        "graphics_backend": graphics_backend,
-        "session": launch_session,
-    }
-    if job_id:
-        _stream_result(
-            action=action,
-            job_id=job_id,
-            ok=True,
-            status="completed",
-            message=f"{source_name} launch request sent for {args.game_id}.",
-            data=data,
-        )
-        return
-    _identity_result(
-        args,
-        action=action,
-        message=f"{source_name} launch request sent for {args.game_id}.",
-        data=data,
+        out.fail(str(exc))
+    out.done(
+        f"{source_name} launch request sent for {args.game_id}.",
+        data={
+            "source_id": args.source,
+            "game_id": args.game_id,
+            "graphics_backend": graphics_backend,
+            "session": _current_session(launch_session),
+        },
     )
 
 
 def cmd_stop_game(args: argparse.Namespace) -> None:
-    job_id = _stream_start(action="stop-game", message="Stopping game...") if _stream_enabled(args) else None
+    out = Output(args, "stop-game")
+    out.start("Stopping game...")
     session, pids = stop_session(args.session_id, force=getattr(args, "force", False))
     if session is None:
-        _json_error(args, action="stop-game", message=f"Unknown launch session: {args.session_id}")
-    message = session.get("message") or "Game stopped."
-    data = {"session": session, "stopped_pids": pids}
-    if _stream_enabled(args):
-        _stream_result(
-            action="stop-game",
-            job_id=job_id or uuid.uuid4().hex,
-            ok=True,
-            status="completed",
-            message=message,
-            data=data,
+        out.fail(f"Unknown launch session: {args.session_id}")
+    out.done(session.get("message") or "Game stopped.", data={"session": session, "stopped_pids": pids})
+
+
+def _graphics_install_command(args: argparse.Namespace, action: str, label: str, install) -> None:
+    out = Output(args, action)
+    bottle = _resolve_bottle(args)
+    out.start(f"Installing {label} into {_target_label(args, bottle)}...")
+    code, tail = install(bottle)
+    if code != 0:
+        out.fail(
+            f"{label} install failed (exit {code}). Tail:\n{tail}",
+            code=code,
+            data={"target": _target_label(args, bottle), "tail": tail},
+            errors=[f"{label} install failed (exit {code})."],
         )
-        return
-    if _json_enabled(args):
-        _emit_json(action="stop-game", ok=True, message=message, data=data)
-        return
-    print(message)
+    out.done(f"Installed {label}.", data={"target": _target_label(args, bottle), "tail": tail})
 
 
 def cmd_install_dxvk(args: argparse.Namespace) -> None:
-    bottle = _resolve_bottle(args)
-    code, tail = install_dxvk(
-        bottle=bottle,
-        dxvk_source=Path(args.dxvk_source),
-        dxvk_flavor=args.dxvk_flavor,
-        use_symlinks=args.symlink,
-        without_dxgi=args.without_dxgi,
+    _graphics_install_command(
+        args,
+        "install-dxvk",
+        "DXVK",
+        lambda bottle: install_dxvk(
+            bottle=bottle,
+            dxvk_source=Path(args.dxvk_source),
+            dxvk_flavor=args.dxvk_flavor,
+            use_symlinks=args.symlink,
+            without_dxgi=args.without_dxgi,
+        ),
     )
-    if code != 0:
-        raise SystemExit(f"DXVK install failed (exit {code}). Tail:\n{tail}")
 
 
 def cmd_install_dxmt(args: argparse.Namespace) -> None:
-    bottle = _resolve_bottle(args)
     wine64 = _require_wine64(args)
-    code, tail = install_dxmt(
-        bottle=bottle,
-        dxmt_source=Path(args.dxmt_source),
-        wine64_path=wine64,
-        allow_unrecommended=getattr(args, "allow_unrecommended_dxmt", False),
+    _graphics_install_command(
+        args,
+        "install-dxmt",
+        "DXMT",
+        lambda bottle: install_dxmt(
+            bottle=bottle,
+            dxmt_source=Path(args.dxmt_source),
+            wine64_path=wine64,
+            allow_unrecommended=getattr(args, "allow_unrecommended_dxmt", False),
+        ),
     )
-    if code != 0:
-        raise SystemExit(f"DXMT install failed (exit {code}). Tail:\n{tail}")
 
 
 def cmd_install_d3dmetal(args: argparse.Namespace) -> None:
-    bottle = _resolve_bottle(args)
     wine64 = _require_wine64(args)
-    code, tail = install_d3dmetal(
-        bottle=bottle,
-        d3dmetal_source=Path(args.d3dmetal_source),
-        wine64_path=wine64,
+    _graphics_install_command(
+        args,
+        "install-d3dmetal",
+        "D3DMetal",
+        lambda bottle: install_d3dmetal(bottle=bottle, d3dmetal_source=Path(args.d3dmetal_source), wine64_path=wine64),
     )
-    if code != 0:
-        raise SystemExit(f"D3DMetal install failed (exit {code}). Tail:\n{tail}")
 
 
 def cmd_list_runtime_catalog(args: argparse.Namespace) -> None:
     catalog = list_runtime_catalog()
-    if _json_enabled(args) or _stream_enabled(args):
-        _emit_json(
-            action="list-runtime-catalog",
-            ok=True,
-            message="Runtime catalog listed.",
-            data={"runtimes": catalog},
-        )
-        return
-
-    for item in catalog:
-        installed = "installed" if item.get("installed") else "available"
-        print(f"{item['id']}\t{item['kind']}\t{item['name']}\t{item['version']}\t{installed}")
+    Output(args, "list-runtime-catalog").done(
+        "Runtime catalog listed.",
+        data={"runtimes": catalog},
+        text="\n".join(
+            f"{item['id']}\t{item['kind']}\t{item['name']}\t{item['version']}\t{'installed' if item.get('installed') else 'available'}"
+            for item in catalog
+        ),
+    )
 
 
 def cmd_list_installed_runtimes(args: argparse.Namespace) -> None:
     runtimes = [runtime.__dict__ for runtime in list_installed_runtimes()]
-    if _json_enabled(args) or _stream_enabled(args):
-        _emit_json(
-            action="list-installed-runtimes",
-            ok=True,
-            message="Installed runtimes listed.",
-            data={"runtimes": runtimes},
+    Output(args, "list-installed-runtimes").done(
+        "Installed runtimes listed.",
+        data={"runtimes": runtimes},
+        text="\n".join(
+            f"{runtime['id']}\t{runtime['kind']}\t{runtime['name']}\t{runtime['version']}\t{runtime['path']}"
+            for runtime in runtimes
         )
-        return
-
-    if not runtimes:
-        print("No managed runtimes installed.")
-        return
-    for runtime in runtimes:
-        print(f"{runtime['id']}\t{runtime['kind']}\t{runtime['name']}\t{runtime['version']}\t{runtime['path']}")
+        or "No managed runtimes installed.",
+    )
 
 
 def cmd_install_runtime(args: argparse.Namespace) -> None:
+    out = Output(args, "install-runtime")
     bottle = _resolve_bottle(args)
-    wine_path = None
-    if args.wine or args.wine64:
-        wine_path = _require_wine64(args)
-    action = "install-runtime"
-    job_id = _stream_start(action=action, message=f"Installing runtime {args.runtime}...") if _stream_enabled(args) else None
-
-    def callback(name: str, status: str, message: str) -> None:
-        if _stream_enabled(args):
-            _stream_step(
-                action=action,
-                job_id=job_id or uuid.uuid4().hex,
-                name=name,
-                status=status,
-                message=message,
-            )
-
+    wine_path = _require_wine64(args) if args.wine or args.wine64 else None
+    out.start(f"Installing runtime {args.runtime}...")
     try:
         installed, notes = install_runtime(
             runtime_id=args.runtime,
             bottle=bottle,
             wine_path=wine_path,
             install_into_bottle=not args.no_bottle_install,
-            callback=callback,
+            callback=lambda name, status, message: out.step(name, message, status=status),
         )
     except Exception as exc:
-        message = str(exc)
-        if _stream_enabled(args):
-            _stream_result(
-                action=action,
-                job_id=job_id or uuid.uuid4().hex,
-                ok=False,
-                status="failed",
-                message=message,
-                errors=[message],
-            )
-            raise SystemExit(1)
-        _json_error(args, action=action, message=message, code=1)
-
-    data = {"runtime": installed.__dict__, "notes": notes}
+        out.fail(str(exc))
     message = f"Installed {installed.name} {installed.version}."
-    if _stream_enabled(args):
-        _stream_result(
-            action=action,
-            job_id=job_id or uuid.uuid4().hex,
-            ok=True,
-            status="completed",
-            message=message,
-            data=data,
-        )
-        return
-    if _json_enabled(args):
-        _emit_json(action=action, ok=True, message=message, data=data)
-        return
-    print(message)
-    for note in notes:
-        print(note)
+    out.done(message, data={"runtime": installed.__dict__, "notes": notes}, text="\n".join([message, *notes]))
+
+
+def _current_session(session: dict) -> dict:
+    return next(
+        (item for item in reconcile_sessions() if item.get("session_id") == session["session_id"]),
+        session,
+    )
 
 
 def cmd_setup_metal(args: argparse.Namespace) -> None:
+    out = Output(args, "setup-metal")
     wine64 = _require_wine64(args)
     bottle = _resolve_bottle(args)
     ensure_bottle_dirs(bottle)
-    job_id = _stream_start(action="setup-metal", message=f"Starting Metal setup for {_target_label(args, bottle)}...") if _stream_enabled(args) else None
+    target = _target_label(args, bottle)
+    out.start(f"Starting Metal setup for {target}...")
     total_steps = 4 if args.no_launch else 5
     runtime = detect_wine_runtime(wine64)
     steps: list[dict[str, str]] = []
+    tail = ""
 
-    app_name = runtime.get("app_name") or "unknown Wine app"
-    version_output = runtime.get("version_output") or "unknown version"
-    if not _json_enabled(args):
-        print(f"Detected Wine runtime: {app_name} ({version_output})")
-        if not runtime.get("is_stable_11"):
-            print("Note: the Metal setup is tuned for Wine Stable 11.0.")
-            print("      This runtime may still work, but if setup-metal or Steam behaves oddly,")
-            print("      switch to /Applications/Wine Stable.app before debugging the prefix.")
-
+    out.note(
+        f"Detected Wine runtime: {runtime.get('app_name') or 'unknown Wine app'} "
+        f"({runtime.get('version_output') or 'unknown version'})"
+    )
+    if not runtime.get("is_stable_11"):
+        out.note(
+            "Note: the Metal setup is tuned for Wine Stable 11.0.\n"
+            "      This runtime may still work, but if setup-metal or Steam behaves oddly,\n"
+            "      switch to /Applications/Wine Stable.app before debugging the prefix."
+        )
     if _is_external_prefix(args):
-        if not _json_enabled(args):
-            print(f"Using external prefix: {bottle.prefix}")
-            print(f"Support files will still live under: {bottle.root}")
+        out.note(f"Using external prefix: {bottle.prefix}\nSupport files will still live under: {bottle.root}")
     else:
-        if not _json_enabled(args):
-            print(f"Using managed bottle '{bottle.name}'")
-            print(f"Managed prefix path: {bottle.prefix}")
+        out.note(f"Using managed bottle '{bottle.name}'\nManaged prefix path: {bottle.prefix}")
 
-    if not _json_enabled(args):
-        print("Initializing prefix...")
-    if _stream_enabled(args):
-        _stream_step(action="setup-metal", job_id=job_id or uuid.uuid4().hex, name="wineboot", status="started", message="Initializing prefix...")
-    code, tail = run_logged(
-        cmd=[str(wine64), "wineboot", "-u"],
-        env={"WINEPREFIX": str(bottle.prefix), "WINEDEBUG": "-all"},
-        log_file=bottle.logs / "01_wineboot.log",
+    def run_step(name: str, message: str, done_message: str, failure: str, operation) -> None:
+        nonlocal tail
+        out.step(name, message)
+        code, tail = operation()
+        if code != 0:
+            out.fail_process(failure, code, tail, data={"target": target, "steps": steps, "tail": tail})
+        steps.append({"name": name, "status": "ok"})
+        out.step(name, done_message, status="ok", completed_steps=len(steps), total_steps=total_steps)
+
+    run_step(
+        "wineboot",
+        "Initializing prefix...",
+        "Initialized prefix.",
+        "wineboot failed",
+        lambda: run_logged(
+            cmd=[str(wine64), "wineboot", "-u"],
+            env={"WINEPREFIX": str(bottle.prefix), "WINEDEBUG": "-all"},
+            log_file=bottle.logs / "01_wineboot.log",
+        ),
     )
-    if code != 0:
-        if _stream_enabled(args):
-            _stream_result(
-                action="setup-metal",
-                job_id=job_id or uuid.uuid4().hex,
-                ok=False,
-                status="failed",
-                message=f"wineboot failed (exit {code}). Tail:\n{tail}",
-                data={"target": _target_label(args, bottle), "steps": steps, "tail": tail},
-                errors=[f"wineboot failed (exit {code})."],
-            )
-            raise SystemExit(code)
-        _json_error(args, action="setup-metal", message=f"wineboot failed (exit {code}). Tail:\n{tail}", code=code)
-    steps.append({"name": "wineboot", "status": "ok"})
-    if _stream_enabled(args):
-        _stream_progress(
-            action="setup-metal",
-            job_id=job_id or uuid.uuid4().hex,
-            name="wineboot",
-            status="ok",
-            message="Initialized prefix.",
-            completed_steps=1,
-            total_steps=total_steps,
-        )
-
-    if not _json_enabled(args):
-        print("Setting the prefix Windows version to Windows 10...")
-    if _stream_enabled(args):
-        _stream_step(action="setup-metal", job_id=job_id or uuid.uuid4().hex, name="set-win10", status="started", message="Setting Windows version to Windows 10...")
-    code, tail = set_prefix_windows_version(bottle, wine64, "win10")
-    if code != 0:
-        if _stream_enabled(args):
-            _stream_result(
-                action="setup-metal",
-                job_id=job_id or uuid.uuid4().hex,
-                ok=False,
-                status="failed",
-                message=f"winecfg -v win10 failed (exit {code}). Tail:\n{tail}",
-                data={"target": _target_label(args, bottle), "steps": steps, "tail": tail},
-                errors=[f"winecfg -v win10 failed (exit {code})."],
-            )
-            raise SystemExit(code)
-        _json_error(args, action="setup-metal", message=f"winecfg -v win10 failed (exit {code}). Tail:\n{tail}", code=code)
-    steps.append({"name": "set-win10", "status": "ok"})
-    if _stream_enabled(args):
-        _stream_progress(
-            action="setup-metal",
-            job_id=job_id or uuid.uuid4().hex,
-            name="set-win10",
-            status="ok",
-            message="Set Windows version to Windows 10.",
-            completed_steps=2,
-            total_steps=total_steps,
-        )
-
+    run_step(
+        "set-win10",
+        "Setting Windows version to Windows 10...",
+        "Set Windows version to Windows 10.",
+        "winecfg -v win10 failed",
+        lambda: set_prefix_windows_version(bottle, wine64, "win10"),
+    )
     winetricks = _resolve_winetricks(args.winetricks)
-    if not _json_enabled(args):
-        print("Installing Steam via winetricks...")
-    if _stream_enabled(args):
-        _stream_step(action="setup-metal", job_id=job_id or uuid.uuid4().hex, name="winetricks-steam", status="started", message="Installing Steam via winetricks...")
-    code, tail = run_winetricks(
-        bottle=bottle,
-        winetricks_path=winetricks,
-        verbs=["steam"],
-        log_name="02_winetricks_steam.log",
-        unattended=not args.interactive,
-        wine_path=wine64,
+    run_step(
+        "winetricks-steam",
+        "Installing Steam via winetricks...",
+        "Installed Steam via winetricks.",
+        "winetricks steam failed",
+        lambda: run_winetricks(
+            bottle=bottle,
+            winetricks_path=winetricks,
+            verbs=["steam"],
+            log_name="02_winetricks_steam.log",
+            unattended=not args.interactive,
+            wine_path=wine64,
+        ),
     )
-    if code != 0:
-        if _stream_enabled(args):
-            _stream_result(
-                action="setup-metal",
-                job_id=job_id or uuid.uuid4().hex,
-                ok=False,
-                status="failed",
-                message=f"winetricks steam failed (exit {code}). Tail:\n{tail}",
-                data={"target": _target_label(args, bottle), "steps": steps, "tail": tail},
-                errors=[f"winetricks steam failed (exit {code})."],
-            )
-            raise SystemExit(code)
-        _json_error(args, action="setup-metal", message=f"winetricks steam failed (exit {code}). Tail:\n{tail}", code=code)
-    steps.append({"name": "winetricks-steam", "status": "ok"})
-    if _stream_enabled(args):
-        _stream_progress(
-            action="setup-metal",
-            job_id=job_id or uuid.uuid4().hex,
-            name="winetricks-steam",
-            status="ok",
-            message="Installed Steam via winetricks.",
-            completed_steps=3,
-            total_steps=total_steps,
-        )
-
-    if not _json_enabled(args):
-        print("Installing DXMT into the Wine runtime and prefix...")
-    if _stream_enabled(args):
-        _stream_step(action="setup-metal", job_id=job_id or uuid.uuid4().hex, name="install-dxmt", status="started", message="Installing DXMT...")
-    code, tail = install_dxmt(
-        bottle=bottle,
-        dxmt_source=Path(args.dxmt_source),
-        wine64_path=wine64,
-        allow_unrecommended=getattr(args, "allow_unrecommended_dxmt", False),
+    run_step(
+        "install-dxmt",
+        "Installing DXMT...",
+        "Installed DXMT.",
+        "DXMT install failed",
+        lambda: install_dxmt(
+            bottle=bottle,
+            dxmt_source=Path(args.dxmt_source),
+            wine64_path=wine64,
+            allow_unrecommended=getattr(args, "allow_unrecommended_dxmt", False),
+        ),
     )
-    if code != 0:
-        if _stream_enabled(args):
-            _stream_result(
-                action="setup-metal",
-                job_id=job_id or uuid.uuid4().hex,
-                ok=False,
-                status="failed",
-                message=f"DXMT install failed (exit {code}). Tail:\n{tail}",
-                data={"target": _target_label(args, bottle), "steps": steps, "tail": tail},
-                errors=[f"DXMT install failed (exit {code})."],
-            )
-            raise SystemExit(code)
-        _json_error(args, action="setup-metal", message=f"DXMT install failed (exit {code}). Tail:\n{tail}", code=code)
-    steps.append({"name": "install-dxmt", "status": "ok"})
-    if _stream_enabled(args):
-        _stream_progress(
-            action="setup-metal",
-            job_id=job_id or uuid.uuid4().hex,
-            name="install-dxmt",
-            status="ok",
-            message="Installed DXMT.",
-            completed_steps=4,
-            total_steps=total_steps,
-        )
-
+    completion = {"completed_steps": total_steps, "total_steps": total_steps, "progress": 1.0}
     if args.no_launch:
-        if _stream_enabled(args):
-            _stream_result(
-                action="setup-metal",
-                job_id=job_id or uuid.uuid4().hex,
-                ok=True,
-                status="completed",
-                message="Metal setup complete.",
-                data={"target": _target_label(args, bottle), "steps": steps, "completed_steps": total_steps, "total_steps": total_steps, "progress": 1.0},
-            )
-            return
-        if _json_enabled(args):
-            _emit_json(
-                action="setup-metal",
-                ok=True,
-                message="Metal setup complete.",
-                data={"target": _target_label(args, bottle), "steps": steps},
-                status="completed",
-            )
-        else:
-            print("Metal setup complete.")
-            if _is_external_prefix(args):
-                print("Next step:")
-                print(f"python3 nase.py --prefix {bottle.prefix} --wine {wine64} run-steam")
-            else:
-                print("Next step:")
-                print(f"python3 nase.py --bottle {bottle.name} --wine {wine64} run-steam")
-        return
-
-    if not _json_enabled(args):
-        print("Opening Steam...")
-    if _stream_enabled(args):
-        _stream_step(action="setup-metal", job_id=job_id or uuid.uuid4().hex, name="run-steam", status="started", message="Opening Steam...")
-    code, tail = run_steam(
-        bottle=bottle,
-        wine64_path=wine64,
-        wait=not args.no_wait,
-        graphics_backend=_resolved_graphics_backend(args, for_steam=True),
-    )
-    if code != 0:
-        if _stream_enabled(args):
-            _stream_result(
-                action="setup-metal",
-                job_id=job_id or uuid.uuid4().hex,
-                ok=False,
-                status="failed",
-                message=f"Steam launch failed after setup (exit {code}). Tail:\n{tail}",
-                data={"target": _target_label(args, bottle), "steps": steps, "tail": tail},
-                errors=[f"Steam launch failed after setup (exit {code})."],
-            )
-            raise SystemExit(code)
-        _json_error(args, action="setup-metal", message=f"Steam launch failed after setup (exit {code}). Tail:\n{tail}", code=code)
-    steps.append({"name": "run-steam", "status": "ok"})
-    if _stream_enabled(args):
-        _stream_progress(
-            action="setup-metal",
-            job_id=job_id or uuid.uuid4().hex,
-            name="run-steam",
-            status="ok",
-            message="Steam opened.",
-            completed_steps=5,
-            total_steps=total_steps,
+        rerun_target = f"--prefix {bottle.prefix}" if _is_external_prefix(args) else f"--bottle {bottle.name}"
+        out.done(
+            "Metal setup complete.",
+            data={"target": target, "steps": steps, **completion},
+            text=f"Metal setup complete.\nNext step:\npython3 nase.py {rerun_target} --wine {wine64} run-steam",
         )
-    if args.no_wait:
-        if _stream_enabled(args):
-            _stream_result(
-                action="setup-metal",
-                job_id=job_id or uuid.uuid4().hex,
-                ok=True,
-                status="completed",
-                message="Metal setup complete. Steam launched.",
-                data={"target": _target_label(args, bottle), "steps": steps, "tail": tail, "completed_steps": total_steps, "total_steps": total_steps, "progress": 1.0},
-            )
-            return
-        if _json_enabled(args):
-            _emit_json(
-                action="setup-metal",
-                ok=True,
-                message="Metal setup complete. Steam launched.",
-                data={"target": _target_label(args, bottle), "steps": steps, "tail": tail},
-                status="completed",
-            )
-        else:
-            print("Metal setup complete. Steam launched.")
-    else:
-        if _stream_enabled(args):
-            _stream_result(
-                action="setup-metal",
-                job_id=job_id or uuid.uuid4().hex,
-                ok=True,
-                status="completed",
-                message="Metal setup complete. Steam exited.",
-                data={"target": _target_label(args, bottle), "steps": steps, "tail": tail, "completed_steps": total_steps, "total_steps": total_steps, "progress": 1.0},
-            )
-            return
-        if _json_enabled(args):
-            _emit_json(
-                action="setup-metal",
-                ok=True,
-                message="Metal setup complete. Steam exited.",
-                data={"target": _target_label(args, bottle), "steps": steps, "tail": tail},
-                status="completed",
-            )
-        else:
-            print("Metal setup complete. Steam exited.")
+        return
+    run_step(
+        "run-steam",
+        "Opening Steam...",
+        "Steam opened.",
+        "Steam launch failed after setup",
+        lambda: run_steam(
+            bottle=bottle,
+            wine64_path=wine64,
+            wait=not args.no_wait,
+            graphics_backend=_resolved_graphics_backend(args, for_steam=True),
+        ),
+    )
+    out.done(
+        "Metal setup complete. Steam launched." if args.no_wait else "Metal setup complete. Steam exited.",
+        data={"target": target, "steps": steps, "tail": tail, **completion},
+    )
 
 
 def cmd_wipe_bottles(args: argparse.Namespace) -> None:
@@ -1996,8 +1512,9 @@ def cmd_wipe_bottles(args: argparse.Namespace) -> None:
 
 
 def cmd_list_games(args: argparse.Namespace) -> None:
+    out = Output(args, "list-games")
     bottle = _resolve_bottle(args)
-    job_id = _stream_start(action="list-games", message="Scanning registered Steam libraries...") if _stream_enabled(args) else None
+    out.start("Scanning registered Steam libraries...")
     registry = refresh_registry(bottle)
     games = installed_games(registry)
     installed_count = len(games)
@@ -2012,16 +1529,6 @@ def cmd_list_games(args: argparse.Namespace) -> None:
         if game.appid not in known_appids
     )
     owned_count = len(games) - installed_count
-    data = {
-        "target": _target_label(args, bottle),
-        "registry_path": str(app_support_root() / "steam-libraries.json"),
-        "library_count": len(registry["libraries"]),
-        "libraries": registry["libraries"],
-        "games": games,
-        "installed_count": installed_count,
-        "owned_count": owned_count,
-    }
-    warnings = list(registry["warnings"]) + ownership_warnings
     if games:
         message = (
             f"Found {installed_count} installed Steam game(s) across "
@@ -2029,42 +1536,34 @@ def cmd_list_games(args: argparse.Namespace) -> None:
         )
     else:
         message = "No installed or owned Steam games were found."
-    if _stream_enabled(args):
-        _stream_result(
-            action="list-games",
-            job_id=job_id or uuid.uuid4().hex,
-            ok=True,
-            status="completed",
-            message=message,
-            data=data,
-            warnings=warnings,
+    out.done(
+        message,
+        data={
+            "target": _target_label(args, bottle),
+            "registry_path": str(app_support_root() / "steam-libraries.json"),
+            "library_count": len(registry["libraries"]),
+            "libraries": registry["libraries"],
+            "games": games,
+            "installed_count": installed_count,
+            "owned_count": owned_count,
+        },
+        warnings=list(registry["warnings"]) + ownership_warnings,
+        text="\n".join(
+            f"{game['appid']}\t{game['name']}\t{game['install_dir'] or '(owned, not installed)'}" for game in games
         )
-        return
-    if _json_enabled(args):
-        _emit_json(
-            action="list-games",
-            ok=True,
-            message=message,
-            data=data,
-            warnings=warnings,
-            status="completed",
-        )
-        return
-    if not games:
-        print(message)
-        return
-    for game in games:
-        print(f"{game['appid']}\t{game['name']}\t{game['install_dir'] or '(owned, not installed)'}")
+        or message,
+    )
 
 
 def cmd_doctor(args: argparse.Namespace) -> None:
+    out = Output(args, "doctor")
     bottle = _resolve_bottle(args)
     wine_value = args.wine64 or args.wine
+    target = _target_label(args, bottle)
     actions: list[str] = []
-    job_id = _stream_start(action="doctor", message=f"Running doctor for {_target_label(args, bottle)}...") if _stream_enabled(args) else None
+    out.start(f"Running doctor for {target}...")
     if args.fix:
-        if _stream_enabled(args):
-            _stream_step(action="doctor", job_id=job_id or uuid.uuid4().hex, name="doctor-fix", status="started", message="Applying safe fixes...")
+        out.step("doctor-fix", "Applying safe fixes...")
         try:
             actions = apply_doctor_fixes(
                 bottle=bottle,
@@ -2073,168 +1572,114 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                 allow_unrecommended_dxmt=getattr(args, "allow_unrecommended_dxmt", False),
             )
         except Exception as exc:
-            if _stream_enabled(args):
-                _stream_result(
-                    action="doctor",
-                    job_id=job_id or uuid.uuid4().hex,
-                    ok=False,
-                    status="failed",
-                    message=f"doctor --fix failed: {exc}",
-                    errors=[f"doctor --fix failed: {exc}"],
-                )
-                raise SystemExit(1)
-            _json_error(args, action="doctor", message=f"doctor --fix failed: {exc}")
-        if not _json_enabled(args):
-            print(f"Doctor fix target: {_target_label(args, bottle)}")
-            for action in actions:
-                print(f"[FIX ] {action}")
-        if _stream_enabled(args):
-            _stream_step(action="doctor", job_id=job_id or uuid.uuid4().hex, name="doctor-fix", status="ok", message="Applied safe fixes.")
+            out.fail(f"doctor --fix failed: {exc}")
+        for action in actions:
+            out.note(f"[FIX ] {action}")
+        out.step("doctor-fix", "Applied safe fixes.", status="ok")
 
     results = run_doctor(bottle=bottle, wine_value=wine_value, winetricks_value=args.winetricks)
-
-    worst_status = "ok"
     rank = {"ok": 0, "warn": 1, "fail": 2}
-    checks_payload = []
-    for result in results:
-        checks_payload.append({"status": result.status, "name": result.name, "detail": result.detail})
-        if rank[result.status] > rank[worst_status]:
-            worst_status = result.status
-
-    if _stream_enabled(args):
-        _stream_result(
-            action="doctor",
-            job_id=job_id or uuid.uuid4().hex,
-            ok=worst_status != "fail",
-            status="failed" if worst_status == "fail" else "completed",
-            message=f"Doctor finished with status {worst_status}.",
-            data={
-                "target": _target_label(args, bottle),
-                "worst_status": worst_status,
-                "checks": checks_payload,
-                "actions": actions,
-            },
-            errors=[] if worst_status != "fail" else ["One or more checks failed."],
-        )
-        if worst_status == "fail":
-            raise SystemExit(1)
-        return
-
-    if _json_enabled(args):
-        _emit_json(
-            action="doctor",
-            ok=worst_status != "fail",
-            message=f"Doctor finished with status {worst_status}.",
-            data={
-                "target": _target_label(args, bottle),
-                "worst_status": worst_status,
-                "checks": checks_payload,
-                "actions": actions,
-            },
-            errors=[] if worst_status != "fail" else ["One or more checks failed."],
-            status="failed" if worst_status == "fail" else "completed",
-        )
-        if worst_status == "fail":
-            raise SystemExit(1)
-        return
-
-    print(f"Doctor target: {_target_label(args, bottle)}")
-    for result in results:
-        print(f"[{result.status.upper():4}] {result.name}: {result.detail}")
-
-    if worst_status == "fail":
+    worst_status = max((result.status for result in results), key=rank.__getitem__, default="ok")
+    failed = worst_status == "fail"
+    out.done(
+        f"Doctor finished with status {worst_status}.",
+        ok=not failed,
+        data={
+            "target": target,
+            "worst_status": worst_status,
+            "checks": [{"status": result.status, "name": result.name, "detail": result.detail} for result in results],
+            "actions": actions,
+        },
+        errors=["One or more checks failed."] if failed else None,
+        text="\n".join(f"[{result.status.upper():4}] {result.name}: {result.detail}" for result in results),
+    )
+    if failed:
         raise SystemExit(1)
 
 
+def _checked_executable_hint(out: Output, app, *, appid: str, wine64: Path, graphics_backend: str) -> Path | None:
+    """Return the game's likely executable, failing early if this Wine cannot run it."""
+    try:
+        executable = guess_game_executable(app.install_dir, appid)
+    except (FileNotFoundError, RuntimeError):
+        return None
+    try:
+        validate_executable_compatibility(executable=executable, wine_path=wine64, graphics_backend=graphics_backend)
+    except RuntimeError as exc:
+        out.fail(str(exc))
+    return executable
+
+
+def _launch_through_steam(
+    args: argparse.Namespace,
+    out: Output,
+    *,
+    bottle,
+    wine64: Path,
+    library_id: str,
+    profile_id: str,
+    graphics_backend: str,
+    session_id: str,
+    strategy: str,
+) -> tuple[int, str]:
+    """Hand a launch to Windows Steam and record who owns the Steam client.
+
+    On failure the library reservation is released if Steam is not running and
+    the session is marked failed; the caller reports the error.
+    """
+    steam_was_running = steam_is_running(str(bottle.prefix))
+    _acquire_library_or_error(
+        args,
+        action=out.action,
+        session_id=session_id,
+        library_id=library_id,
+        prefix=str(bottle.prefix),
+        bottle=bottle.name,
+        profile_id=profile_id,
+        appid=args.appid,
+    )
+    update_session(
+        session_id,
+        strategy=strategy,
+        steam_was_running=steam_was_running,
+        steam_started_by_nase=not steam_was_running,
+        steam_cleanup_status="not-owned" if steam_was_running else "pending",
+    )
+    code, tail = launch_app(
+        bottle=bottle,
+        wine64_path=wine64,
+        appid=args.appid,
+        graphics_backend=graphics_backend,
+        wait=not args.no_wait,
+        restart_existing=not steam_was_running,
+        graphics_source=_d3dmetal_source(args, graphics_backend),
+    )
+    if code != 0:
+        if not steam_is_running(str(bottle.prefix)):
+            release_steam_activity(library_id=library_id, prefix=str(bottle.prefix))
+        update_session(
+            session_id,
+            status="failed",
+            message="Steam launch failed.",
+            steam_cleanup_after=time.time() + 10 if not steam_was_running else None,
+        )
+    return code, tail
+
+
 def cmd_launch_game(args: argparse.Namespace) -> None:
+    out = Output(args, "launch-game")
     wine64 = _require_wine64(args)
     bottle = _resolve_bottle(args)
     app, library_id = resolve_registered_app(bottle, args.appid)
     graphics_backend = _resolved_graphics_backend(args, for_steam=False)
     profile_id = _bind_launch_profile(
-        args, action="launch-game", bottle=bottle, wine_path=wine64, graphics_backend=graphics_backend
+        args, action=out.action, bottle=bottle, wine_path=wine64, graphics_backend=graphics_backend
     )
-    job_id = _stream_start(action="launch-game", message=f"Launching {app.name} ({app.appid})...") if _stream_enabled(args) else None
-    if not _json_enabled(args):
-        print(f"Launching {app.name} ({app.appid}) via Steam.")
-    if graphics_backend == "dxmt" and args.dxmt_source:
-        code, tail = install_dxmt(
-            bottle=bottle,
-            dxmt_source=Path(args.dxmt_source),
-            wine64_path=wine64,
-            allow_unrecommended=getattr(args, "allow_unrecommended_dxmt", False),
-        )
-        if code != 0:
-            if _stream_enabled(args):
-                _stream_result(
-                    action="launch-game",
-                    job_id=job_id or uuid.uuid4().hex,
-                    ok=False,
-                    status="failed",
-                    message=f"DXMT restore failed (exit {code}). Tail:\n{tail}",
-                    data={"appid": app.appid, "name": app.name, "tail": tail},
-                    errors=[f"DXMT restore failed (exit {code})."],
-                )
-                raise SystemExit(code)
-            _json_error(args, action="launch-game", message=f"DXMT restore failed (exit {code}). Tail:\n{tail}", code=code)
-    elif graphics_backend == "dxvk" and args.dxvk_source:
-        code, tail = install_dxvk(
-            bottle=bottle,
-            dxvk_source=Path(args.dxvk_source),
-            dxvk_flavor=args.dxvk_flavor,
-        )
-        if code != 0:
-            if _stream_enabled(args):
-                _stream_result(
-                    action="launch-game",
-                    job_id=job_id or uuid.uuid4().hex,
-                    ok=False,
-                    status="failed",
-                    message=f"DXVK restore failed (exit {code}). Tail:\n{tail}",
-                    data={"appid": app.appid, "name": app.name, "tail": tail},
-                    errors=[f"DXVK restore failed (exit {code})."],
-                )
-                raise SystemExit(code)
-            _json_error(args, action="launch-game", message=f"DXVK restore failed (exit {code}). Tail:\n{tail}", code=code)
-    elif graphics_backend == "d3dmetal" and args.d3dmetal_source:
-        code, tail = install_d3dmetal(
-            bottle=bottle,
-            d3dmetal_source=Path(args.d3dmetal_source),
-            wine64_path=wine64,
-        )
-        if code != 0:
-            if _stream_enabled(args):
-                _stream_result(
-                    action="launch-game",
-                    job_id=job_id or uuid.uuid4().hex,
-                    ok=False,
-                    status="failed",
-                    message=f"D3DMetal restore failed (exit {code}). Tail:\n{tail}",
-                    data={"appid": app.appid, "name": app.name, "tail": tail},
-                    errors=[f"D3DMetal restore failed (exit {code})."],
-                )
-                raise SystemExit(code)
-            _json_error(args, action="launch-game", message=f"D3DMetal restore failed (exit {code}). Tail:\n{tail}", code=code)
-    try:
-        executable_hint = guess_game_executable(app.install_dir, args.appid)
-    except (FileNotFoundError, RuntimeError):
-        executable_hint = None
-    if executable_hint is not None:
-        try:
-            validate_executable_compatibility(
-                executable=executable_hint, wine_path=wine64, graphics_backend=graphics_backend
-            )
-        except RuntimeError as exc:
-            _json_error(args, action="launch-game", message=str(exc))
-    steam_was_running = steam_is_running(str(bottle.prefix))
-    _acquire_library_or_error(
-        args,
-        action="launch-game",
-        library_id=library_id,
-        prefix=str(bottle.prefix),
-        bottle=bottle.name,
-        profile_id=profile_id,
-        appid=app.appid,
+    out.start(f"Launching {app.name} ({app.appid}) via Steam...")
+    data = {"appid": app.appid, "name": app.name}
+    _restore_graphics_payload(args, out, bottle=bottle, wine64=wine64, graphics_backend=graphics_backend, data=data)
+    executable_hint = _checked_executable_hint(
+        out, app, appid=args.appid, wine64=wine64, graphics_backend=graphics_backend
     )
     launch_session = create_session(
         bottle=bottle,
@@ -2246,121 +1691,115 @@ def cmd_launch_game(args: argparse.Namespace) -> None:
         strategy="steam",
         profile_id=profile_id,
         wine_path=wine64,
-        steam_started_by_nase=not steam_was_running,
-        steam_was_running=steam_was_running,
         library_id=library_id,
     )
-    code, tail = launch_app(
+    code, tail = _launch_through_steam(
+        args,
+        out,
         bottle=bottle,
-        wine64_path=wine64,
-        appid=args.appid,
+        wine64=wine64,
+        library_id=library_id,
+        profile_id=profile_id,
         graphics_backend=graphics_backend,
-        wait=not args.no_wait,
-        restart_existing=not steam_was_running,
-        graphics_source=Path(args.d3dmetal_source) if graphics_backend == "d3dmetal" and args.d3dmetal_source else None,
+        session_id=launch_session["session_id"],
+        strategy="steam",
     )
     if code != 0:
-        if not steam_is_running(str(bottle.prefix)):
-            release_steam_activity(library_id=library_id, prefix=str(bottle.prefix))
-        update_session(
-            launch_session["session_id"],
-            status="failed",
-            message="Steam launch failed.",
-            steam_cleanup_after=time.time() + 10 if launch_session.get("steam_started_by_nase") else None,
-        )
-        if _stream_enabled(args):
-            _stream_result(
-                action="launch-game",
-                job_id=job_id or uuid.uuid4().hex,
-                ok=False,
-                status="failed",
-                message=f"App launch failed (exit {code}). Tail:\n{tail}",
-                data={"appid": app.appid, "name": app.name, "tail": tail},
-                errors=[f"App launch failed (exit {code})."],
-            )
-            raise SystemExit(code)
-        _json_error(args, action="launch-game", message=f"App launch failed (exit {code}). Tail:\n{tail}", code=code)
-    launch_session = next(
-        (item for item in reconcile_sessions() if item.get("session_id") == launch_session["session_id"]),
-        launch_session,
-    )
-    if args.no_wait:
-        if _stream_enabled(args):
-            _stream_result(
-                action="launch-game",
-                job_id=job_id or uuid.uuid4().hex,
-                ok=True,
-                status="completed",
-                message="Launch request sent.",
-                data={"appid": app.appid, "name": app.name, "tail": tail, "session": launch_session},
-            )
-            return
-        if _json_enabled(args):
-            _emit_json(
-                action="launch-game",
-                ok=True,
-                message="Launch request sent.",
-                data={"appid": app.appid, "name": app.name, "tail": tail, "session": launch_session},
-                status="completed",
-            )
-        else:
-            print("Launch request sent.")
+        out.fail_process("App launch failed", code, tail, data={**data, "tail": tail})
+    out.done("Launch request sent.", data={**data, "tail": tail, "session": _current_session(launch_session)})
 
 
 def cmd_install_steam_game(args: argparse.Namespace) -> None:
     """Open Windows Steam on the install prompt for an owned AppID."""
-    action = "install-steam-game"
+    out = Output(args, "install-steam-game")
     wine64 = _require_wine64(args)
     bottle = _resolve_bottle(args)
     graphics_backend = _resolved_graphics_backend(args, for_steam=True)
-    _bind_launch_profile(args, action=action, bottle=bottle, wine_path=wine64, graphics_backend=graphics_backend)
-    job_id = _stream_start(action=action, message=f"Asking Steam to install {args.appid}...") if _stream_enabled(args) else None
+    _bind_launch_profile(args, action=out.action, bottle=bottle, wine_path=wine64, graphics_backend=graphics_backend)
+    out.start(f"Asking Steam to install {args.appid}...")
     code, tail = install_app(
         bottle=bottle,
         wine64_path=wine64,
         appid=args.appid,
         graphics_backend=graphics_backend,
         wait=False,
-        graphics_source=Path(args.d3dmetal_source) if graphics_backend == "d3dmetal" and args.d3dmetal_source else None,
+        graphics_source=_d3dmetal_source(args, graphics_backend),
     )
     data = {"appid": args.appid, "tail": tail}
     if code != 0:
-        message = f"Steam could not be opened for install (exit {code}). Tail:\n{tail}"
-        if _stream_enabled(args):
-            _stream_result(
-                action=action,
-                job_id=job_id or uuid.uuid4().hex,
-                ok=False,
-                status="failed",
-                message=message,
-                data=data,
-                errors=[f"Steam install request failed (exit {code})."],
-            )
-            raise SystemExit(code)
-        _json_error(args, action=action, message=message, code=code)
-    message = f"Steam is showing the install prompt for {args.appid}."
-    if _stream_enabled(args):
-        _stream_result(
-            action=action,
-            job_id=job_id or uuid.uuid4().hex,
-            ok=True,
-            status="completed",
-            message=message,
+        out.fail(
+            f"Steam could not be opened for install (exit {code}). Tail:\n{tail}",
+            code=code,
             data=data,
+            errors=[f"Steam install request failed (exit {code})."],
         )
-        return
-    if _json_enabled(args):
-        _emit_json(action=action, ok=True, message=message, data=data, status="completed")
-        return
-    print(message)
+    out.done(f"Steam is showing the install prompt for {args.appid}.", data=data)
+
+
+def _try_direct_launch(
+    args: argparse.Namespace,
+    out: Output,
+    *,
+    bottle,
+    wine64: Path,
+    app,
+    executable_hint: Path | None,
+    graphics_backend: str,
+    launch_session: dict,
+    data: dict,
+) -> str | None:
+    """Start the game without Steam when that is safe.
+
+    Returns None once the game has started and the result is reported;
+    otherwise returns why the launch should fall back to Steam.
+    """
+    try:
+        scan = scan_game_dir(app.install_dir, max_files=1200)
+        if any(signal.key == "unity" for signal in scan.signals):
+            return "Skipped direct launch for Unity title; using Steam launch for better renderer compatibility."
+    except Exception:
+        pass
+    try:
+        assert_direct_launch_safe(library_path=app.library_path, appid=args.appid)
+        executable = executable_hint or guess_game_executable(app.install_dir, args.appid)
+        code, tail = run_game_executable(
+            bottle=bottle,
+            wine64_path=wine64,
+            executable=executable,
+            extra_args=None,
+            extra_env=None,
+            cwd=executable.parent,
+            wine_debug="-all",
+            wait=False,
+            graphics_backend=graphics_backend,
+            probe_seconds=args.probe_seconds,
+            graphics_source=_d3dmetal_source(args, graphics_backend),
+        )
+    except Exception as exc:
+        return str(exc)
+    if code != 0:
+        return f"Direct launch failed (exit {code}). Tail:\n{tail}"
+    update_session(launch_session["session_id"], strategy="direct", message="Direct launch request sent.")
+    out.done(
+        "Direct launch started.",
+        data={
+            **data,
+            "executable": str(executable),
+            "strategy": "direct",
+            "tail": tail,
+            "session": _current_session(launch_session),
+        },
+    )
+    return None
 
 
 def cmd_smart_launch_game(args: argparse.Namespace) -> None:
+    out = Output(args, "smart-launch-game")
     wine64 = _require_wine64(args)
     bottle = _resolve_bottle(args)
     graphics_backend = _resolved_graphics_backend(args, for_steam=False)
     profile_id = _bind_launch_profile(
-        args, action="smart-launch-game", bottle=bottle, wine_path=wine64, graphics_backend=graphics_backend
+        args, action=out.action, bottle=bottle, wine_path=wine64, graphics_backend=graphics_backend
     )
     try:
         app, library_id = resolve_registered_app(bottle, args.appid)
@@ -2370,19 +1809,13 @@ def cmd_smart_launch_game(args: argparse.Namespace) -> None:
         app = None
         library_id = ""
     app_name = app.name if app else f"Steam App {args.appid}"
-    job_id = _stream_start(action="smart-launch-game", message=f"Launching {app_name} ({args.appid})...") if _stream_enabled(args) else None
+    out.start(f"Launching {app_name} ({args.appid})...")
+    data = {"appid": args.appid, "name": app_name}
 
     if graphics_backend == "d3dmetal":
         steam_exe = bottle.drive_c / "Program Files (x86)" / "Steam" / "Steam.exe"
         if not steam_exe.exists():
-            if _stream_enabled(args):
-                _stream_step(
-                    action="smart-launch-game",
-                    job_id=job_id or uuid.uuid4().hex,
-                    name="setup-d3dmetal-steam",
-                    status="started",
-                    message="Preparing hidden D3DMetal Steam environment...",
-                )
+            out.step("setup-d3dmetal-steam", "Preparing hidden D3DMetal Steam environment...")
             setup_steps = (
                 ("wineboot", lambda: run_logged(
                     cmd=[str(wine64), "wineboot", "-u"],
@@ -2403,102 +1836,19 @@ def cmd_smart_launch_game(args: argparse.Namespace) -> None:
             for step_name, step in setup_steps:
                 code, tail = step()
                 if code != 0:
-                    message = f"D3DMetal environment setup failed at {step_name} (exit {code}). Tail:\n{tail}"
-                    if _stream_enabled(args):
-                        _stream_result(
-                            action="smart-launch-game",
-                            job_id=job_id or uuid.uuid4().hex,
-                            ok=False,
-                            status="failed",
-                            message=message,
-                            data={"appid": args.appid, "name": app_name, "tail": tail},
-                            errors=[message],
-                        )
-                        raise SystemExit(code)
-                    _json_error(args, action="smart-launch-game", message=message, code=code)
-            if _stream_enabled(args):
-                _stream_step(
-                    action="smart-launch-game",
-                    job_id=job_id or uuid.uuid4().hex,
-                    name="setup-d3dmetal-steam",
-                    status="ok",
-                    message="Prepared hidden D3DMetal Steam environment.",
-                )
+                    out.fail(
+                        f"D3DMetal environment setup failed at {step_name} (exit {code}). Tail:\n{tail}",
+                        code=code,
+                        data={**data, "tail": tail},
+                    )
+            out.step("setup-d3dmetal-steam", "Prepared hidden D3DMetal Steam environment.", status="ok")
 
-    if graphics_backend == "dxmt" and args.dxmt_source:
-        code, tail = install_dxmt(
-            bottle=bottle,
-            dxmt_source=Path(args.dxmt_source),
-            wine64_path=wine64,
-            allow_unrecommended=getattr(args, "allow_unrecommended_dxmt", False),
-        )
-        if code != 0:
-            if _stream_enabled(args):
-                _stream_result(
-                    action="smart-launch-game",
-                    job_id=job_id or uuid.uuid4().hex,
-                    ok=False,
-                    status="failed",
-                    message=f"DXMT restore failed (exit {code}). Tail:\n{tail}",
-                    data={"appid": args.appid, "name": app_name, "tail": tail},
-                    errors=[f"DXMT restore failed (exit {code})."],
-                )
-                raise SystemExit(code)
-            _json_error(args, action="smart-launch-game", message=f"DXMT restore failed (exit {code}). Tail:\n{tail}", code=code)
-    elif graphics_backend == "dxvk" and args.dxvk_source:
-        code, tail = install_dxvk(
-            bottle=bottle,
-            dxvk_source=Path(args.dxvk_source),
-            dxvk_flavor=args.dxvk_flavor,
-        )
-        if code != 0:
-            if _stream_enabled(args):
-                _stream_result(
-                    action="smart-launch-game",
-                    job_id=job_id or uuid.uuid4().hex,
-                    ok=False,
-                    status="failed",
-                    message=f"DXVK restore failed (exit {code}). Tail:\n{tail}",
-                    data={"appid": args.appid, "name": app_name, "tail": tail},
-                    errors=[f"DXVK restore failed (exit {code})."],
-                )
-                raise SystemExit(code)
-            _json_error(args, action="smart-launch-game", message=f"DXVK restore failed (exit {code}). Tail:\n{tail}", code=code)
-    elif graphics_backend == "d3dmetal" and args.d3dmetal_source:
-        code, tail = install_d3dmetal(
-            bottle=bottle,
-            d3dmetal_source=Path(args.d3dmetal_source),
-            wine64_path=wine64,
-        )
-        if code != 0:
-            if _stream_enabled(args):
-                _stream_result(
-                    action="smart-launch-game",
-                    job_id=job_id or uuid.uuid4().hex,
-                    ok=False,
-                    status="failed",
-                    message=f"D3DMetal restore failed (exit {code}). Tail:\n{tail}",
-                    data={"appid": args.appid, "name": app_name, "tail": tail},
-                    errors=[f"D3DMetal restore failed (exit {code})."],
-                )
-                raise SystemExit(code)
-            _json_error(args, action="smart-launch-game", message=f"D3DMetal restore failed (exit {code}). Tail:\n{tail}", code=code)
-
-    direct_error: str | None = None
-    skip_direct_reason: str | None = None
-    executable_hint: Path | None = None
-    if app is not None:
-        try:
-            executable_hint = guess_game_executable(app.install_dir, args.appid)
-        except (FileNotFoundError, RuntimeError):
-            executable_hint = None
-        if executable_hint is not None:
-            try:
-                validate_executable_compatibility(
-                    executable=executable_hint, wine_path=wine64, graphics_backend=graphics_backend
-                )
-            except RuntimeError as exc:
-                _json_error(args, action="smart-launch-game", message=str(exc))
+    _restore_graphics_payload(args, out, bottle=bottle, wine64=wine64, graphics_backend=graphics_backend, data=data)
+    executable_hint = (
+        _checked_executable_hint(out, app, appid=args.appid, wine64=wine64, graphics_backend=graphics_backend)
+        if app is not None
+        else None
+    )
     launch_session = create_session(
         bottle=bottle,
         appid=args.appid,
@@ -2511,167 +1861,48 @@ def cmd_smart_launch_game(args: argparse.Namespace) -> None:
         wine_path=wine64,
         library_id=library_id,
     )
-    try:
-        if app is None:
-            skip_direct_reason = "No manifest found in the hidden D3DMetal environment yet; using Steam protocol launch."
-        else:
-            scan = scan_game_dir(app.install_dir, max_files=1200)
-            if any(signal.key == "unity" for signal in scan.signals):
-                skip_direct_reason = "Skipped direct launch for Unity title; using Steam launch for better renderer compatibility."
-    except Exception:
-        scan = None
-
-    if skip_direct_reason is None:
-        try:
-            assert_direct_launch_safe(library_path=app.library_path, appid=args.appid)
-            executable = executable_hint or guess_game_executable(app.install_dir, args.appid)
-            code, tail = run_game_executable(
-                bottle=bottle,
-                wine64_path=wine64,
-                executable=executable,
-                extra_args=None,
-                extra_env=None,
-                cwd=executable.parent,
-                wine_debug="-all",
-                wait=False,
-                graphics_backend=graphics_backend,
-                probe_seconds=args.probe_seconds,
-                graphics_source=Path(args.d3dmetal_source) if graphics_backend == "d3dmetal" and args.d3dmetal_source else None,
-            )
-            if code == 0:
-                update_session(launch_session["session_id"], strategy="direct", message="Direct launch request sent.")
-                launch_session = next(
-                    (item for item in reconcile_sessions() if item.get("session_id") == launch_session["session_id"]),
-                    launch_session,
-                )
-                message = "Direct launch started."
-                data = {
-                    "appid": args.appid,
-                    "name": app_name,
-                    "executable": str(executable),
-                    "strategy": "direct",
-                    "tail": tail,
-                    "session": launch_session,
-                }
-                if _stream_enabled(args):
-                    _stream_result(
-                        action="smart-launch-game",
-                        job_id=job_id or uuid.uuid4().hex,
-                        ok=True,
-                        status="completed",
-                        message=message,
-                        data=data,
-                    )
-                    return
-                if _json_enabled(args):
-                    _emit_json(
-                        action="smart-launch-game",
-                        ok=True,
-                        message=message,
-                        data=data,
-                        status="completed",
-                    )
-                    return
-                print(message)
-                return
-            direct_error = f"Direct launch failed (exit {code}). Tail:\n{tail}"
-        except Exception as exc:
-            direct_error = str(exc)
+    if app is None:
+        direct_error = "No manifest found in the hidden D3DMetal environment yet; using Steam protocol launch."
     else:
-        direct_error = skip_direct_reason
+        direct_error = _try_direct_launch(
+            args, out, bottle=bottle, wine64=wine64, app=app, executable_hint=executable_hint,
+            graphics_backend=graphics_backend, launch_session=launch_session, data=data,
+        )
+        if direct_error is None:
+            return
 
-    steam_was_running = steam_is_running(str(bottle.prefix))
-    _acquire_library_or_error(
+    code, tail = _launch_through_steam(
         args,
-        action="smart-launch-game",
-        library_id=library_id,
-        prefix=str(bottle.prefix),
-        bottle=bottle.name,
-        profile_id=profile_id,
-        appid=args.appid,
-    )
-    update_session(
-        launch_session["session_id"],
-        steam_was_running=steam_was_running,
-        steam_started_by_nase=not steam_was_running,
-        steam_cleanup_status="not-owned" if steam_was_running else "pending",
-    )
-    code, tail = launch_app(
+        out,
         bottle=bottle,
-        wine64_path=wine64,
-        appid=args.appid,
+        wine64=wine64,
+        library_id=library_id,
+        profile_id=profile_id,
         graphics_backend=graphics_backend,
-        wait=not args.no_wait,
-        restart_existing=not steam_was_running,
-        graphics_source=Path(args.d3dmetal_source) if graphics_backend == "d3dmetal" and args.d3dmetal_source else None,
+        session_id=launch_session["session_id"],
+        strategy="steam-fallback",
     )
     if code != 0:
-        if not steam_is_running(str(bottle.prefix)):
-            release_steam_activity(library_id=library_id, prefix=str(bottle.prefix))
-        update_session(
-            launch_session["session_id"],
-            status="failed",
-            strategy="steam-fallback",
-            message="Steam launch failed.",
-            steam_cleanup_after=time.time() + 10 if not steam_was_running else None,
-        )
         failure = f"Fallback Steam launch failed (exit {code}). Tail:\n{tail}"
-        combined = f"{direct_error or 'Direct launch failed.'}\n\n{failure}"
-        if _stream_enabled(args):
-            _stream_result(
-                action="smart-launch-game",
-                job_id=job_id or uuid.uuid4().hex,
-                ok=False,
-                status="failed",
-                message=combined,
-                data={"appid": args.appid, "name": app_name, "tail": tail, "strategy": "steam-fallback", "session": launch_session},
-                errors=[failure],
-            )
-            raise SystemExit(code)
-        _json_error(args, action="smart-launch-game", message=combined, code=code)
-
-    update_session(launch_session["session_id"], strategy="steam-fallback", message="Steam launch request sent.")
-    launch_session = next(
-        (item for item in reconcile_sessions() if item.get("session_id") == launch_session["session_id"]),
-        launch_session,
+        out.fail(
+            f"{direct_error}\n\n{failure}",
+            code=code,
+            data={**data, "tail": tail, "strategy": "steam-fallback", "session": launch_session},
+            errors=[failure],
+        )
+    update_session(launch_session["session_id"], message="Steam launch request sent.")
+    warnings = [direct_error]
+    out.done(
+        "Opened with Steam after direct launch failed.",
+        data={
+            **data,
+            "strategy": "steam-fallback",
+            "tail": tail,
+            "warnings": warnings,
+            "session": _current_session(launch_session),
+        },
+        warnings=warnings,
     )
-    message = "Opened with Steam after direct launch failed."
-    data = {
-        "appid": args.appid,
-        "name": app_name,
-        "strategy": "steam-fallback",
-        "tail": tail,
-        "warnings": [direct_error] if direct_error else [],
-        "session": launch_session,
-    }
-    if _stream_enabled(args):
-        _stream_result(
-            action="smart-launch-game",
-            job_id=job_id or uuid.uuid4().hex,
-            ok=True,
-            status="completed",
-            message=message,
-            data=data,
-            warnings=[direct_error] if direct_error else [],
-        )
-        return
-    if _json_enabled(args):
-        _emit_json(
-            action="smart-launch-game",
-            ok=True,
-            message=message,
-            data=data,
-            warnings=[direct_error] if direct_error else [],
-            status="completed",
-        )
-        return
-    print(message)
-
-
-def cmd_gui(args: argparse.Namespace) -> None:
-    from .gui import launch_gui
-
-    launch_gui(args)
 
 
 def _resolve_debug_executable(args: argparse.Namespace) -> Path:
@@ -2681,10 +1912,11 @@ def _resolve_debug_executable(args: argparse.Namespace) -> Path:
         bottle = _resolve_bottle(args)
         app, _ = resolve_registered_app(bottle, args.appid)
         return guess_game_executable(app.install_dir, args.appid)
-    raise SystemExit("Provide either --appid or --exe")
+    _json_error(args, action="debug-game", message="Provide either --appid or --exe")
 
 
 def cmd_debug_game(args: argparse.Namespace) -> None:
+    out = Output(args, "debug-game")
     wine64 = _require_wine64(args)
     bottle = _resolve_bottle(args)
     executable = _resolve_debug_executable(args)
@@ -2693,79 +1925,22 @@ def cmd_debug_game(args: argparse.Namespace) -> None:
         profile_id = f"standalone-{graphics_backend}"
     else:
         profile_id = _bind_launch_profile(
-            args, action="debug-game", bottle=bottle, wine_path=wine64, graphics_backend=graphics_backend
+            args, action=out.action, bottle=bottle, wine_path=wine64, graphics_backend=graphics_backend
         )
-    job_id = _stream_start(action="debug-game", message=f"Launching {executable.name} with Wine debug logging...") if _stream_enabled(args) else None
+    out.start(f"Launching {executable.name} with Wine debug logging...")
     extra_args = list(args.game_args or [])
     if extra_args and extra_args[0] == "--":
         extra_args = extra_args[1:]
     extra_env: dict[str, str] = {}
     for entry in args.env or []:
         if "=" not in entry:
-            raise SystemExit(f"Invalid --env value: {entry!r}. Expected KEY=VALUE.")
+            out.fail(f"Invalid --env value: {entry!r}. Expected KEY=VALUE.")
         key, value = entry.split("=", 1)
         extra_env[key] = value
 
-    if not _json_enabled(args):
-        print(f"Launching {executable.name} directly with Wine debug logging...")
-    if graphics_backend == "dxmt" and args.dxmt_source:
-        code, tail = install_dxmt(
-            bottle=bottle,
-            dxmt_source=Path(args.dxmt_source),
-            wine64_path=wine64,
-            allow_unrecommended=getattr(args, "allow_unrecommended_dxmt", False),
-        )
-        if code != 0:
-            if _stream_enabled(args):
-                _stream_result(
-                    action="debug-game",
-                    job_id=job_id or uuid.uuid4().hex,
-                    ok=False,
-                    status="failed",
-                    message=f"DXMT restore failed (exit {code}). Tail:\n{tail}",
-                    data={"executable": str(executable), "tail": tail},
-                    errors=[f"DXMT restore failed (exit {code})."],
-                )
-                raise SystemExit(code)
-            _json_error(args, action="debug-game", message=f"DXMT restore failed (exit {code}). Tail:\n{tail}", code=code)
-    elif graphics_backend == "dxvk" and args.dxvk_source:
-        code, tail = install_dxvk(
-            bottle=bottle,
-            dxvk_source=Path(args.dxvk_source),
-            dxvk_flavor=args.dxvk_flavor,
-        )
-        if code != 0:
-            if _stream_enabled(args):
-                _stream_result(
-                    action="debug-game",
-                    job_id=job_id or uuid.uuid4().hex,
-                    ok=False,
-                    status="failed",
-                    message=f"DXVK restore failed (exit {code}). Tail:\n{tail}",
-                    data={"executable": str(executable), "tail": tail},
-                    errors=[f"DXVK restore failed (exit {code})."],
-                )
-                raise SystemExit(code)
-            _json_error(args, action="debug-game", message=f"DXVK restore failed (exit {code}). Tail:\n{tail}", code=code)
-    elif graphics_backend == "d3dmetal" and args.d3dmetal_source:
-        code, tail = install_d3dmetal(
-            bottle=bottle,
-            d3dmetal_source=Path(args.d3dmetal_source),
-            wine64_path=wine64,
-        )
-        if code != 0:
-            if _stream_enabled(args):
-                _stream_result(
-                    action="debug-game",
-                    job_id=job_id or uuid.uuid4().hex,
-                    ok=False,
-                    status="failed",
-                    message=f"D3DMetal restore failed (exit {code}). Tail:\n{tail}",
-                    data={"executable": str(executable), "tail": tail},
-                    errors=[f"D3DMetal restore failed (exit {code})."],
-                )
-                raise SystemExit(code)
-            _json_error(args, action="debug-game", message=f"D3DMetal restore failed (exit {code}). Tail:\n{tail}", code=code)
+    _restore_graphics_payload(
+        args, out, bottle=bottle, wine64=wine64, graphics_backend=graphics_backend, data={"executable": str(executable)}
+    )
     debug_app = None
     debug_library_id = ""
     if args.appid:
@@ -2775,7 +1950,7 @@ def cmd_debug_game(args: argparse.Namespace) -> None:
             executable=executable, wine_path=wine64, graphics_backend=graphics_backend
         )
     except RuntimeError as exc:
-        _json_error(args, action="debug-game", message=str(exc))
+        out.fail(str(exc))
     launch_cwd = Path(args.cwd) if args.cwd else executable.parent
     overlay: dict[str, str] | None = None
     if args.legacy_directx_source:
@@ -2788,7 +1963,7 @@ def cmd_debug_game(args: argparse.Namespace) -> None:
                 source=Path(args.legacy_directx_source),
             )
         except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
-            _json_error(args, action="debug-game", message=f"Legacy DirectX overlay could not be prepared: {exc}")
+            out.fail(f"Legacy DirectX overlay could not be prepared: {exc}")
         executable = Path(overlay["overlay_executable"])
         launch_cwd = Path(overlay["overlay_root"])
         extra_env["WINEDLLOVERRIDES"] = "ddraw=n;d3dimm=n"
@@ -2797,10 +1972,10 @@ def cmd_debug_game(args: argparse.Namespace) -> None:
     steam_connection_offset: int | None = None
     if args.ensure_steam:
         if not args.appid:
-            _json_error(args, action="debug-game", message="Starting Steam automatically requires a Steam AppID.")
+            out.fail("Starting Steam automatically requires a Steam AppID.")
         _acquire_library_or_error(
             args,
-            action="debug-game",
+            action=out.action,
             library_id=debug_library_id,
             prefix=str(bottle.prefix),
             bottle=bottle.name,
@@ -2824,18 +1999,12 @@ def cmd_debug_game(args: argparse.Namespace) -> None:
                 wait=False,
                 graphics_backend=graphics_backend,
                 restart_existing=False,
-                graphics_source=(
-                    Path(args.d3dmetal_source)
-                    if graphics_backend == "d3dmetal" and args.d3dmetal_source
-                    else None
-                ),
+                graphics_source=_d3dmetal_source(args, graphics_backend),
             )
             if code != 0:
                 release_steam_activity(library_id=debug_library_id, prefix=str(bottle.prefix))
-                _json_error(
-                    args,
-                    action="debug-game",
-                    message=f"The matching Windows Steam could not be started (exit {code}). Tail:\n{tail}",
+                out.fail(
+                    f"The matching Windows Steam could not be started (exit {code}). Tail:\n{tail}",
                     code=code,
                 )
             steam_started_by_nase = True
@@ -2852,13 +2021,9 @@ def cmd_debug_game(args: argparse.Namespace) -> None:
         else:
             if steam_started_by_nase:
                 release_steam_activity(library_id=debug_library_id, prefix=str(bottle.prefix))
-            _json_error(
-                args,
-                action="debug-game",
-                message=(
-                    "Windows Steam opened but did not finish signing in within one minute. "
-                    "Open Steam for this compatibility profile, finish any login or update prompt, then try again."
-                ),
+            out.fail(
+                "Windows Steam opened but did not finish signing in within one minute. "
+                "Open Steam for this compatibility profile, finish any login or update prompt, then try again."
             )
     launch_session = create_session(
         bottle=bottle,
@@ -2884,48 +2049,17 @@ def cmd_debug_game(args: argparse.Namespace) -> None:
         wine_debug=args.wine_debug,
         wait=not args.no_wait,
         graphics_backend=graphics_backend,
-        graphics_source=Path(args.d3dmetal_source) if graphics_backend == "d3dmetal" and args.d3dmetal_source else None,
+        graphics_source=_d3dmetal_source(args, graphics_backend),
     )
     if code != 0:
         update_session(launch_session["session_id"], status="failed", message="Direct game launch failed.")
-        if _stream_enabled(args):
-            _stream_result(
-                action="debug-game",
-                job_id=job_id or uuid.uuid4().hex,
-                ok=False,
-                status="failed",
-                message=f"Direct game launch failed (exit {code}). Tail:\n{tail}",
-                data={"executable": str(executable), "tail": tail},
-                errors=[f"Direct game launch failed (exit {code})."],
-            )
-            raise SystemExit(code)
-        _json_error(args, action="debug-game", message=f"Direct game launch failed (exit {code}). Tail:\n{tail}", code=code)
+        out.fail_process("Direct game launch failed", code, tail, data={"executable": str(executable), "tail": tail})
     if not args.no_wait:
         update_session(launch_session["session_id"], status="exited", message="Game process exited.")
-    launch_session = next(
-        (item for item in reconcile_sessions() if item.get("session_id") == launch_session["session_id"]),
-        launch_session,
+    out.done(
+        "Debug launch started." if args.no_wait else "Game process exited.",
+        data={"executable": str(executable), "tail": tail, "session": _current_session(launch_session)},
     )
-    if _stream_enabled(args):
-        _stream_result(
-            action="debug-game",
-            job_id=job_id or uuid.uuid4().hex,
-            ok=True,
-            status="completed",
-            message="Game process exited." if not args.no_wait else "Debug launch started.",
-            data={"executable": str(executable), "tail": tail, "session": launch_session},
-        )
-        return
-    if _json_enabled(args):
-        _emit_json(
-            action="debug-game",
-            ok=True,
-            message="Game process exited." if not args.no_wait else "Debug launch started.",
-            data={"executable": str(executable), "tail": tail, "session": launch_session},
-            status="completed",
-        )
-    else:
-        print("Game process exited.")
 
 
 def _resolve_scan_target(args: argparse.Namespace) -> Path:
@@ -2939,64 +2073,40 @@ def _resolve_scan_target(args: argparse.Namespace) -> Path:
 
 def cmd_scan_game(args: argparse.Namespace) -> None:
     scan = scan_game_dir(_resolve_scan_target(args))
-    if _json_enabled(args):
-        _emit_json(
-            action="scan-game",
-            ok=True,
-            message=f"Scanned {scan.root}",
-            data={
-                "root": str(scan.root),
-                "signals": [
-                    {"key": signal.key, "detail": signal.detail, "path": str(signal.path)}
-                    for signal in scan.signals
-                ],
-            },
-            status="completed",
-        )
-        return
-    if not scan.signals:
-        print(f"No known dependency markers found in {scan.root}")
-        return
-    for signal in scan.signals:
-        print(f"{signal.key}\t{signal.detail}\t{signal.path}")
+    Output(args, "scan-game").done(
+        f"Scanned {scan.root}",
+        data={
+            "root": str(scan.root),
+            "signals": [{"key": signal.key, "detail": signal.detail, "path": str(signal.path)} for signal in scan.signals],
+        },
+        text="\n".join(f"{signal.key}\t{signal.detail}\t{signal.path}" for signal in scan.signals)
+        or f"No known dependency markers found in {scan.root}",
+    )
 
 
 def cmd_advise_game(args: argparse.Namespace) -> None:
     scan = scan_game_dir(_resolve_scan_target(args))
     recommendations = recommend_dependencies(scan)
-    if _json_enabled(args):
-        _emit_json(
-            action="advise-game",
-            ok=True,
-            message=f"Generated {len(recommendations)} recommendation(s)." if recommendations else f"No rules matched for {scan.root}",
-            data={
-                "root": str(scan.root),
-                "recommendations": [
-                    {"verb": rec.verb, "reason": rec.reason}
-                    for rec in recommendations
-                ],
-            },
-            status="completed",
-        )
-        return
-    if not recommendations:
-        print(f"No rules matched for {scan.root}")
-        return
-    for rec in recommendations:
-        print(f"{rec.verb}\t{rec.reason}")
+    message = f"Generated {len(recommendations)} recommendation(s)." if recommendations else f"No rules matched for {scan.root}"
+    Output(args, "advise-game").done(
+        message,
+        data={
+            "root": str(scan.root),
+            "recommendations": [{"verb": rec.verb, "reason": rec.reason} for rec in recommendations],
+        },
+        text="\n".join(f"{rec.verb}\t{rec.reason}" for rec in recommendations) or message,
+    )
 
 
 def cmd_reset_game_overlay(args: argparse.Namespace) -> None:
+    out = Output(args, "reset-game-overlay")
     if not args.confirm:
-        _json_error(args, action="reset-game-overlay", message="Reset requires --confirm.")
-    bottle = _resolve_bottle(args)
-    removed = reset_legacy_directx_overlay(bottle=bottle, game_id=args.game_id)
-    message = "Removed the per-game legacy DirectX overlay." if removed else "No per-game overlay was installed."
-    data = {"game_id": args.game_id, "removed": removed}
-    if _json_enabled(args) or _stream_enabled(args):
-        _emit_json(action="reset-game-overlay", ok=True, message=message, data=data)
-    else:
-        print(message)
+        out.fail("Reset requires --confirm.")
+    removed = reset_legacy_directx_overlay(bottle=_resolve_bottle(args), game_id=args.game_id)
+    out.done(
+        "Removed the per-game legacy DirectX overlay." if removed else "No per-game overlay was installed.",
+        data={"game_id": args.game_id, "removed": removed},
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -3263,10 +2373,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor_cmd.set_defaults(func=cmd_doctor)
 
-    gui_cmd = sub.add_parser("gui", help="Open the simple desktop frontend")
-    gui_cmd.add_argument("--no-browser", action="store_true", help="Start the local UI server without opening a browser")
-    gui_cmd.set_defaults(func=cmd_gui)
-
     sub.add_parser("list-games", help="List installed Steam games discovered from manifests").set_defaults(func=cmd_list_games)
 
     launch_cmd = sub.add_parser("launch-game", help="Launch a Steam game by AppID")
@@ -3361,12 +2467,13 @@ def _fail_open_stream_job(message: str) -> bool:
     """Report a failed result for a streamed job the command left open."""
     if not _OPEN_STREAM_JOB:
         return False
-    _stream_result(
+    _emit_stream_event(
+        event="result",
         action=_OPEN_STREAM_JOB["action"],
         job_id=_OPEN_STREAM_JOB["job_id"],
-        ok=False,
         status="failed",
         message=message,
+        ok=False,
         errors=[message],
     )
     return True

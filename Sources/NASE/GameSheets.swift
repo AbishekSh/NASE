@@ -196,7 +196,7 @@ struct GameSettingsSheet: View {
                                         Button(model.compatibilityProfileExists(.dxvk, bottleName: assignedBottleName) ? "Repair DXVK" : "Set Up DXVK") {
                                             model.setupCompatibilityProfile(.dxvk, bottleName: assignedBottleName)
                                         }
-                                        .disabled(model.hasActiveBackendWork || model.backendPreflightState != .ready)
+                                        .disabled(model.jobs.hasActiveWork || model.backendPreflightState != .ready)
                                     }
                                 }
                                 if detectedArchitecture == "32-bit x86 (WoW64)" {

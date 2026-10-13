@@ -298,7 +298,7 @@ struct SettingsSheet: View {
 
             Spacer()
 
-            if let job = model.currentOperationJob {
+            if let job = model.jobs.current {
                 HStack(spacing: 9) {
                     ProgressView()
                         .controlSize(.small)
@@ -351,7 +351,7 @@ struct SettingsSheet: View {
         case .runtimes:
             settingsRuntimeCenterPanel
         case .jobs:
-            if model.currentOperationJob != nil {
+            if model.jobs.current != nil {
                 settingsCurrentOperationPanel
             }
             if model.latestDoctorResult != nil || model.latestSetupResult != nil {
@@ -1178,7 +1178,7 @@ struct SettingsSheet: View {
                 .font(.headline)
                 .foregroundStyle(themeForeground)
 
-            if let job = model.currentOperationJob {
+            if let job = model.jobs.current {
                 jobRow(job)
 
                 if let result = model.currentOperationResult {
@@ -1205,7 +1205,7 @@ struct SettingsSheet: View {
                 .font(.headline)
                 .foregroundStyle(themeForeground)
 
-            if model.activeBackendJobs.isEmpty == false {
+            if model.jobs.active.isEmpty == false {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Text("Active")
@@ -1215,24 +1215,24 @@ struct SettingsSheet: View {
                         Button("Refresh") { model.refreshBackendJobs() }
                             .buttonStyle(.borderless)
                     }
-                    ForEach(model.activeBackendJobs) { job in
+                    ForEach(model.jobs.active) { job in
                         jobRow(job)
                     }
                 }
             }
 
-            if model.recentBackendJobs.isEmpty == false {
+            if model.jobs.recent.isEmpty == false {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Recent")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(themeForeground)
-                    ForEach(Array(model.recentBackendJobs.prefix(6))) { job in
+                    ForEach(Array(model.jobs.recent.prefix(6))) { job in
                         jobRow(job)
                     }
                 }
             }
 
-            if model.activeBackendJobs.isEmpty && model.recentBackendJobs.isEmpty {
+            if model.jobs.active.isEmpty && model.jobs.recent.isEmpty {
                 Text("No backend jobs recorded yet.")
                     .font(.subheadline)
                     .foregroundStyle(themeMutedForeground)
@@ -1260,7 +1260,7 @@ struct SettingsSheet: View {
                         .font(.subheadline)
                         .foregroundStyle(themeMutedForeground)
                         .fixedSize(horizontal: false, vertical: true)
-                    if [.queued, .started, .cancelling].contains(job.status) {
+                    if job.status.isActive {
                         Button(job.status == .cancelling ? "Cancelling…" : "Cancel") {
                             model.cancelBackendJob(job)
                         }

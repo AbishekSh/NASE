@@ -91,6 +91,13 @@ The SwiftUI layer owns library UX, app state, settings, sheets, and backend comm
   views or launch orchestration.
 - `LibraryOrdering.swift`: pure library presentation policy. Discovery order and
   storage order do not determine how the grid is sorted.
+- `BackendJobStore.swift`: the app's view of backend jobs (active and recent),
+  including the placeholder shown until the backend reports its own job. It
+  holds state only; `AppViewModel.runBackendJob` drives it from the bridge.
+- `LaunchSessionTracker.swift`: decides when launch sessions are reconciled with
+  the backend: the bounded `list-sessions` poller and its watchdog, refresh on
+  app activation and after a launch hand-off, and per-PID exit watchers. What
+  the sessions mean for each game stays in `AppViewModel`.
 
 `AppViewModel.swift` is currently the largest file and is the main pressure point. Future work should move cohesive domains out only when the new file has a clear boundary, for example:
 
@@ -131,6 +138,9 @@ The backend is a CLI-first engine. It should remain usable from Terminal while a
   - Global runtime selection: `--wine` / related Wine path flags.
   - Structured modes: `--json` and `--jsonl`.
   - Job events: start, step, progress, result.
+  - Handlers report through one `Output` object (`start`, `step`, `done`,
+    `fail`). It renders JSONL events, a single JSON result, or Terminal text,
+    so commands never branch on the output mode themselves.
   - Commands include setup, doctor, Steam launch, game launch, direct debug launch, Winetricks, graphics installers, scanning, and advice.
 
 The CLI is the compatibility contract. Existing commands should keep working even when the app gains richer structured behavior.
@@ -216,11 +226,6 @@ is documented in `docs/RELEASING.md`.
 - `winetricks.py`: managed Winetricks invocation with the selected profile's `WINE`, `WINE64`, and `WINESERVER` paths.
 - `scanner.py`: local game folder signal detection.
 - `advisor.py`: rule-based dependency recommendations from scanner signals.
-
-### Secondary UI
-
-- `webui.py`: simple local browser frontend. This predates the richer SwiftUI product but remains useful for quick manual operation and backend debugging.
-- `gui.py`: thin GUI/browser launcher glue.
 
 ## Multi-Store Source Architecture
 

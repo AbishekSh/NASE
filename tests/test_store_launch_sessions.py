@@ -75,7 +75,7 @@ class StoreLaunchSessionTests(unittest.TestCase):
             patch.object(cli, "_game_source", return_value=source),
             patch.object(sessions, "_processes", return_value={}),
             patch.object(sessions, "_prefix_pids", return_value=set()),
-            patch.object(cli, "_identity_result", lambda _args, **kwargs: captured.update(kwargs)),
+            patch.object(cli.Output, "done", lambda _out, message, **kwargs: captured.update(kwargs, message=message)),
         ):
             cli.cmd_launch_source_game(args)
         return captured
@@ -127,7 +127,7 @@ class StoreLaunchSessionTests(unittest.TestCase):
             patch.object(cli, "_bind_launch_profile", return_value="plain-wine-v1"),
             patch.object(cli, "graphics_launch_environment", return_value={}),
             patch.object(cli, "_game_source", return_value=source),
-            patch.object(cli, "_json_error", side_effect=SystemExit(1)),
+            patch.object(cli.Output, "fail", side_effect=SystemExit(1)),
         ):
             with self.assertRaises(SystemExit):
                 cli.cmd_launch_source_game(args)
