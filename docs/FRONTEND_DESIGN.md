@@ -41,6 +41,11 @@ The default grid favors compact cards capped at 420 points rather than stretchin
 
 The library toolbar also offers a persistent Grid/List control. List mode uses compact artwork rows with title, source, status, collection, size, overflow actions, and the same primary Play/Install/Stop control. The selected layout applies consistently across sources and is remembered between launches.
 
+The default library order is **Availability**: installed titles appear first,
+then owned titles that still need installation, with each group alphabetized.
+The selected sort mode is persisted. Manual ordering remains available when the
+user wants an explicit custom sequence.
+
 ## Progress and feedback
 
 Every long-running action must have visible feedback:

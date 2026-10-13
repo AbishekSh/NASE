@@ -150,6 +150,7 @@ enum GameCollection: String, CaseIterable, Identifiable, Codable {
 }
 
 enum LibrarySortOption: String, CaseIterable, Identifiable {
+    case availability = "Availability"
     case manual = "Manual"
     case title = "Title"
     case size = "Size"
