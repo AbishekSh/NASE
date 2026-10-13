@@ -1358,7 +1358,7 @@ final class AppViewModel {
                 }
                 await MainActor.run {
                     if let responseJob = response.job {
-                        self.reconcileDetachedJob(responseJob, fallbackActiveJobID: activeJobID, action: action)
+                        self.reconcileDetachedJob(responseJob, fallbackActiveJobID: activeJobID)
                     } else {
                         let fallbackJob = self.makeFallbackJob(for: action, status: .completed, message: "Installed \(runtime.displayName).")
                         self.completeBackendJob(activeJobID, finalJob: fallbackJob)
@@ -2126,7 +2126,7 @@ final class AppViewModel {
                 }
                 await MainActor.run {
                     if let responseJob = response.job {
-                        self.reconcileDetachedJob(responseJob, fallbackActiveJobID: activeJobID, action: action)
+                        self.reconcileDetachedJob(responseJob, fallbackActiveJobID: activeJobID)
                     } else {
                         let fallbackJob = self.makeFallbackJob(for: action, status: .completed, message: self.jobSuccessMessage(for: action))
                         self.completeBackendJob(activeJobID, finalJob: fallbackJob)
@@ -3920,7 +3920,7 @@ final class AppViewModel {
                 }
                 await MainActor.run {
                     if let responseJob = response.job {
-                        self.reconcileDetachedJob(responseJob, fallbackActiveJobID: activeJobID, action: action)
+                        self.reconcileDetachedJob(responseJob, fallbackActiveJobID: activeJobID)
                     } else {
                         let fallbackJob = self.makeFallbackJob(for: action, status: .completed, message: self.jobSuccessMessage(for: action))
                         self.completeBackendJob(activeJobID, finalJob: fallbackJob)
@@ -4044,33 +4044,11 @@ final class AppViewModel {
         }
     }
 
-    private func reconcileDetachedJob(_ job: BackendJob, fallbackActiveJobID: String, action: BackendAction) {
-        if shouldTreatStartedResponseAsFinished(for: action), job.status == .started {
-            activeBackendJobs.removeAll { $0.id == fallbackActiveJobID || $0.id == job.id || $0.action == job.action }
-            let completedJob = BackendJob(
-                id: job.id,
-                action: job.action,
-                status: .completed,
-                message: job.message,
-                progress: 1.0,
-                completedSteps: job.completedSteps,
-                totalSteps: job.totalSteps
-            )
-            recordBackendJob(completedJob)
-            return
-        }
-
+    private func reconcileDetachedJob(_ job: BackendJob, fallbackActiveJobID: String) {
+        // Detached launches report `completed` once the process is handed off;
+        // the launch session, not the job, tracks whether the game is running.
         if activeBackendJobs.contains(where: { $0.id == fallbackActiveJobID }) {
             completeBackendJob(fallbackActiveJobID, finalJob: job)
-        }
-    }
-
-    private func shouldTreatStartedResponseAsFinished(for action: BackendAction) -> Bool {
-        switch action {
-        case .openSteam, .launchGame, .smartLaunchGame, .debugGame, .debugExecutable:
-            return true
-        default:
-            return false
         }
     }
 

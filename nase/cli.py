@@ -10,6 +10,7 @@ import subprocess
 import sys
 import textwrap
 import time
+import traceback
 import uuid
 import zipfile
 from pathlib import Path
@@ -98,6 +99,10 @@ _TRANSIENT_JOB_ACTIONS = {
 }
 _TRANSIENT_JOB_IDS: set[str] = set()
 _JOB_TARGET: dict[str, str] = {}
+# The streamed job this process started and has not yet reported a result for.
+# Errors raised later in the command are reported against it instead of
+# starting a second job and leaving this one to be reconciled as interrupted.
+_OPEN_STREAM_JOB: dict[str, str] = {}
 
 
 def _json_enabled(args: argparse.Namespace) -> bool:
@@ -151,7 +156,9 @@ def _emit_stream_event(
         step = (data or {}).get("step") if event == "step" else None
         update_job(
             job_id,
-            status=status,
+            # A step's status ("ok", "failed", ...) describes that step only;
+            # the job itself stays active until its result event.
+            status=None if event == "step" else status,
             message=message,
             step=step,
             progress=(data or {}).get("progress"),
@@ -177,6 +184,8 @@ def _emit_stream_event(
         ),
         flush=True,
     )
+    if event == "result" and _OPEN_STREAM_JOB.get("job_id") == job_id:
+        _OPEN_STREAM_JOB.clear()
 
 
 def _stream_start(*, action: str, message: str) -> str:
@@ -192,6 +201,8 @@ def _stream_start(*, action: str, message: str) -> str:
         status="started",
         message=message,
     )
+    _OPEN_STREAM_JOB.clear()
+    _OPEN_STREAM_JOB.update(job_id=job_id, action=action)
     return job_id
 
 
@@ -258,9 +269,9 @@ def _stream_result(
 
 def _json_error(args: argparse.Namespace, *, action: str, message: str, code: int = 1, data: dict | None = None) -> None:
     if _stream_enabled(args):
-        job_id = _stream_start(action=action, message=message)
+        job_id = _OPEN_STREAM_JOB.get("job_id") or _stream_start(action=action, message=message)
         _stream_result(
-            action=action,
+            action=_OPEN_STREAM_JOB.get("action") or action,
             job_id=job_id,
             ok=False,
             status="failed",
@@ -1025,7 +1036,7 @@ def cmd_run_steam(args: argparse.Namespace) -> None:
                 action="run-steam",
                 job_id=job_id or uuid.uuid4().hex,
                 ok=True,
-                status="started",
+                status="completed",
                 message="Steam launched.",
                 data={"target": _target_label(args, bottle), "tail": tail},
             )
@@ -1036,7 +1047,7 @@ def cmd_run_steam(args: argparse.Namespace) -> None:
                 ok=True,
                 message="Steam launched.",
                 data={"target": _target_label(args, bottle), "tail": tail},
-                status="started",
+                status="completed",
             )
         else:
             print("Steam launched.")
@@ -1934,7 +1945,7 @@ def cmd_setup_metal(args: argparse.Namespace) -> None:
                 action="setup-metal",
                 job_id=job_id or uuid.uuid4().hex,
                 ok=True,
-                status="started",
+                status="completed",
                 message="Metal setup complete. Steam launched.",
                 data={"target": _target_label(args, bottle), "steps": steps, "tail": tail, "completed_steps": total_steps, "total_steps": total_steps, "progress": 1.0},
             )
@@ -1945,7 +1956,7 @@ def cmd_setup_metal(args: argparse.Namespace) -> None:
                 ok=True,
                 message="Metal setup complete. Steam launched.",
                 data={"target": _target_label(args, bottle), "steps": steps, "tail": tail},
-                status="started",
+                status="completed",
             )
         else:
             print("Metal setup complete. Steam launched.")
@@ -2900,7 +2911,7 @@ def cmd_debug_game(args: argparse.Namespace) -> None:
             action="debug-game",
             job_id=job_id or uuid.uuid4().hex,
             ok=True,
-            status="started" if args.no_wait else "completed",
+            status="completed",
             message="Game process exited." if not args.no_wait else "Debug launch started.",
             data={"executable": str(executable), "tail": tail, "session": launch_session},
         )
@@ -2911,7 +2922,7 @@ def cmd_debug_game(args: argparse.Namespace) -> None:
             ok=True,
             message="Game process exited." if not args.no_wait else "Debug launch started.",
             data={"executable": str(executable), "tail": tail, "session": launch_session},
-            status="started" if args.no_wait else "completed",
+            status="completed",
         )
     else:
         print("Game process exited.")
@@ -3346,6 +3357,21 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _fail_open_stream_job(message: str) -> bool:
+    """Report a failed result for a streamed job the command left open."""
+    if not _OPEN_STREAM_JOB:
+        return False
+    _stream_result(
+        action=_OPEN_STREAM_JOB["action"],
+        job_id=_OPEN_STREAM_JOB["job_id"],
+        ok=False,
+        status="failed",
+        message=message,
+        errors=[message],
+    )
+    return True
+
+
 def main() -> None:
     global _JOB_TARGET
     parser = build_parser()
@@ -3366,4 +3392,14 @@ def main() -> None:
     if is_apple_silicon() and not getattr(args, "json", False) and not getattr(args, "jsonl", False):
         print("[Note] You’re on Apple Silicon. Many Wine/Steam setups run under Rosetta 2.")
 
-    args.func(args)
+    try:
+        args.func(args)
+    except SystemExit as exc:
+        if exc.code not in (0, None):
+            _fail_open_stream_job(exc.code if isinstance(exc.code, str) else f"Command failed (exit {exc.code}).")
+        raise
+    except Exception as exc:
+        if not _fail_open_stream_job(str(exc) or type(exc).__name__):
+            raise
+        traceback.print_exc()
+        raise SystemExit(1) from exc

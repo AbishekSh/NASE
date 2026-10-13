@@ -39,6 +39,7 @@ class DependencyStatusTests(unittest.TestCase):
             patch.object(dependencies, "_rosetta_installed", return_value=False),
             patch.object(dependencies, "_command_version", return_value=(0, "wine-10.0")),
             patch.object(dependencies, "list_installed_runtimes", return_value=[]),
+            patch.object(dependencies, "installed_runtime_executable", return_value=None),
             patch.object(dependencies.shutil, "which", return_value=None),
             patch.object(dependencies.subprocess, "run", return_value=SimpleNamespace(stdout="arm64", returncode=0)),
         ):

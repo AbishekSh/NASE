@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from nase.jobs import cancel_job, create_job, list_jobs, load_job, update_job
+from nase.jobs import RETAINED_FINISHED_JOBS, cancel_job, create_job, list_jobs, load_job, reconcile_job, update_job
 
 
 class DurableJobTests(unittest.TestCase):
@@ -59,6 +59,44 @@ class DurableJobTests(unittest.TestCase):
             job = cancel_job("job_live")
         self.assertEqual(job["status"], "cancelling")
         kill.assert_called_once()
+
+
+    def test_reconcile_from_stale_snapshot_keeps_reported_result(self) -> None:
+        stale = create_job(job_id="job_done", action="debug-game", message="Launching")
+        update_job("job_done", status="completed", message="Debug launch started.")
+        with patch("nase.jobs._pid_is_our_backend", return_value=False):
+            job = reconcile_job(stale)
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(load_job("job_done")["status"], "completed")
+
+    def test_cancel_does_not_signal_a_job_that_already_finished(self) -> None:
+        create_job(job_id="job_racing", action="setup", message="Starting")
+
+        def finish_before_cancel(job_id: str, **changes):
+            update_job(job_id, status="completed", message="Setup complete.")
+            return update_job(job_id, **changes)
+
+        with (
+            patch("nase.jobs._pid_is_our_backend", return_value=True),
+            patch("nase.jobs.update_job", side_effect=finish_before_cancel),
+            patch("nase.jobs.os.kill") as kill,
+        ):
+            job = cancel_job("job_racing")
+        self.assertEqual(job["status"], "completed")
+        kill.assert_not_called()
+
+    def test_listing_prunes_oldest_finished_jobs_and_keeps_active_ones(self) -> None:
+        for index in range(RETAINED_FINISHED_JOBS + 5):
+            create_job(job_id=f"job_old_{index}", action="stop-game", message="Stopping")
+            update_job(f"job_old_{index}", status="completed", message="Stopped.")
+        create_job(job_id="job_active", action="setup", message="Starting")
+        with patch("nase.jobs._pid_is_our_backend", return_value=True):
+            list_jobs(limit=200)
+        remaining = {path.stem for path in (self.root / "jobs").glob("*.json")}
+        self.assertEqual(len(remaining), RETAINED_FINISHED_JOBS + 1)
+        self.assertIn("job_active", remaining)
+        self.assertNotIn("job_old_0", remaining)
+        self.assertIn(f"job_old_{RETAINED_FINISHED_JOBS + 4}", remaining)
 
 
 if __name__ == "__main__":
