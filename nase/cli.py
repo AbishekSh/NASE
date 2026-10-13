@@ -50,6 +50,7 @@ from .steam import (
     ensure_shared_steam,
     graphics_launch_environment,
     guess_game_executable,
+    resolve_game_launch,
     install_app,
     install_steam,
     kill_nase_wine_processes,
@@ -1743,7 +1744,6 @@ def _try_direct_launch(
     bottle,
     wine64: Path,
     app,
-    executable_hint: Path | None,
     graphics_backend: str,
     launch_session: dict,
     data: dict,
@@ -1761,14 +1761,16 @@ def _try_direct_launch(
         pass
     try:
         assert_direct_launch_safe(library_path=app.library_path, appid=args.appid)
-        executable = executable_hint or guess_game_executable(app.install_dir, args.appid)
+        # Launch exactly as Steam would: some games need the arguments or the
+        # working directory recorded in their Steam launch options.
+        launch = resolve_game_launch(app.install_dir, args.appid)
         code, tail = run_game_executable(
             bottle=bottle,
             wine64_path=wine64,
-            executable=executable,
-            extra_args=None,
+            executable=launch.executable,
+            extra_args=launch.arguments or None,
             extra_env=None,
-            cwd=executable.parent,
+            cwd=launch.working_dir,
             wine_debug="-all",
             wait=False,
             graphics_backend=graphics_backend,
@@ -1784,7 +1786,8 @@ def _try_direct_launch(
         "Direct launch started.",
         data={
             **data,
-            "executable": str(executable),
+            "executable": str(launch.executable),
+            "arguments": launch.arguments,
             "strategy": "direct",
             "tail": tail,
             "session": _current_session(launch_session),
@@ -1865,7 +1868,7 @@ def cmd_smart_launch_game(args: argparse.Namespace) -> None:
         direct_error = "No manifest found in the hidden D3DMetal environment yet; using Steam protocol launch."
     else:
         direct_error = _try_direct_launch(
-            args, out, bottle=bottle, wine64=wine64, app=app, executable_hint=executable_hint,
+            args, out, bottle=bottle, wine64=wine64, app=app,
             graphics_backend=graphics_backend, launch_session=launch_session, data=data,
         )
         if direct_error is None:

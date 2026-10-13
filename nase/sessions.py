@@ -20,6 +20,9 @@ LAUNCH_GRACE_SECONDS = 45
 # Steam may update the game, sync Cloud saves, or show a prompt before it
 # starts the game, so a launch handed to Steam waits longer while Steam runs.
 STEAM_HANDOFF_GRACE_SECONDS = 600
+# A large game update can outlast that, so the wait continues while Steam is
+# actively downloading, up to a hard cap.
+STEAM_UPDATE_GRACE_SECONDS = 3 * 60 * 60
 STEAM_HANDOFF_STRATEGIES = {"steam", "steam-fallback"}
 _STEAM_PROCESS_PATTERN = re.compile(r"(?:^|/)steam(?:\.exe)?(?:\s|$)")
 PROCESS_EXIT_GRACE_SECONDS = 3
@@ -399,15 +402,17 @@ def reconcile_sessions() -> list[dict[str, Any]]:
             exit_grace_expired = isinstance(last_seen_at, (int, float)) and now - last_seen_at >= PROCESS_EXIT_GRACE_SECONDS
             if not launch_grace_expired and not exit_grace_expired:
                 continue
-            if (
+            waiting_on_steam = (
                 last_seen_at is None
                 and session.get("strategy") in STEAM_HANDOFF_STRATEGIES
-                and launch_age < STEAM_HANDOFF_GRACE_SECONDS
+                and launch_age < STEAM_UPDATE_GRACE_SECONDS
                 and _steam_in_prefix(processes, prefix_cache[prefix])
-            ):
+            )
+            updating = waiting_on_steam and _steam_has_active_work(prefix)
+            if waiting_on_steam and (updating or launch_age < STEAM_HANDOFF_GRACE_SECONDS):
                 message = (
                     "Steam is updating the game before it starts."
-                    if _steam_has_active_work(prefix)
+                    if updating
                     else "Waiting for Steam to start the game."
                 )
                 if session.get("message") != message:

@@ -436,6 +436,26 @@ class LaunchSessionTests(unittest.TestCase):
                     reconciled = next(item for item in sessions.reconcile_sessions() if item["session_id"] == session["session_id"])
                 self.assertEqual(reconciled["status"], "exited")
 
+    def test_steam_handoff_outlasts_the_launch_window_while_steam_downloads(self) -> None:
+        cases = (
+            (sessions.STEAM_HANDOFF_GRACE_SECONDS + 60, True, "launching"),
+            (sessions.STEAM_HANDOFF_GRACE_SECONDS + 60, False, "exited"),
+            (sessions.STEAM_UPDATE_GRACE_SECONDS + 1, True, "exited"),
+        )
+        for age, downloading, expected in cases:
+            with self.subTest(age=age, downloading=downloading):
+                self.registry.unlink(missing_ok=True)
+                with (
+                    patch.object(sessions, "_registry_path", return_value=self.registry),
+                    patch.object(sessions, "reconcile_shared_steam_client"),
+                    patch.object(sessions, "_processes", return_value={7: r"C:\Program Files (x86)\Steam\Steam.exe"}),
+                    patch.object(sessions, "_prefix_pids", return_value={7}),
+                    patch.object(sessions, "_steam_has_active_work", return_value=downloading),
+                ):
+                    session = self._steam_handoff_session(age_seconds=age)
+                    reconciled = next(item for item in sessions.reconcile_sessions() if item["session_id"] == session["session_id"])
+                self.assertEqual(reconciled["status"], expected)
+
 
 if __name__ == "__main__":
     unittest.main()

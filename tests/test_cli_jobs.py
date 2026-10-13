@@ -13,6 +13,7 @@ from nase.bottle import Bottle
 import nase.cli as cli
 import nase.sessions as sessions
 from nase.jobs import load_job
+from nase.steam import GameLaunch
 
 
 def run_main(argv: list[str], **patches) -> tuple[list[dict], object]:
@@ -209,6 +210,43 @@ class SteamHandoffTests(unittest.TestCase):
                 self.assertEqual(code, 1)
                 self.assertIn("owned by Default-D3DMetal", events[-1]["message"])
                 self.assertEqual([session["status"] for session in stored], ["failed"])
+
+    def test_direct_launch_uses_steam_launch_options(self) -> None:
+        launched: dict = {}
+
+        def run_game(**kwargs):
+            launched.update(kwargs)
+            return 0, "started"
+
+        launch = GameLaunch(
+            executable=self.root / "isaac" / "isaac-ng.exe",
+            arguments=["-windowed"],
+            working_dir=self.root / "isaac" / "data",
+        )
+        registry = self.root / "direct-sessions.json"
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch("nase.jobs.app_support_root", return_value=self.root))
+            stack.enter_context(patch.object(sessions, "_registry_path", return_value=registry))
+            stack.enter_context(patch.object(sessions, "_processes", return_value={}))
+            stack.enter_context(patch.object(sessions, "_prefix_pids", return_value=set()))
+            stack.enter_context(patch.object(sessions, "reconcile_shared_steam_client"))
+            events, code = run_main(
+                ["--wine", "/bin/echo", "smart-launch-game", "--appid", "250900", "--no-wait"],
+                _resolve_bottle=lambda _args: self.bottle,
+                resolve_registered_app=lambda *_a, **_k: (self.app, "library_1"),
+                _bind_launch_profile=lambda *_a, **_k: "dxmt-wine-stable-11-v1",
+                guess_game_executable=lambda *_a, **_k: launch.executable,
+                validate_executable_compatibility=lambda **_: "x86_64",
+                scan_game_dir=lambda *_a, **_k: SimpleNamespace(signals=[]),
+                assert_direct_launch_safe=lambda **_: None,
+                resolve_game_launch=lambda *_a, **_k: launch,
+                run_game_executable=run_game,
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(events[-1]["data"]["arguments"], ["-windowed"])
+        self.assertEqual(launched["extra_args"], ["-windowed"])
+        self.assertEqual(launched["cwd"], self.root / "isaac" / "data")
 
 
 if __name__ == "__main__":

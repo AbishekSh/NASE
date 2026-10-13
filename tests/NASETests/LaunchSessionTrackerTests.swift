@@ -106,4 +106,23 @@ final class LaunchSessionTrackerTests: XCTestCase {
         XCTAssertTrue(tracker.isPolling)
         tracker.stop()
     }
+
+    func testPollsSlowlyWhenIdleAndPromptlyOnceAGameIsActive() async throws {
+        let log = FetchLog()
+        let tracker = LaunchSessionTracker(pollInterval: .milliseconds(20), idlePollInterval: .seconds(60))
+        tracker.fetchSessions = {
+            _ = await log.record()
+            return []
+        }
+        tracker.ensurePolling()
+        try await Task.sleep(for: .milliseconds(200))
+        let idleFetches = await log.count
+        XCTAssertEqual(idleFetches, 1, "an idle tracker should not poll again within its idle interval")
+
+        tracker.watch([session("s1")])
+        try await Task.sleep(for: .milliseconds(200))
+        let activeFetches = await log.count
+        XCTAssertGreaterThanOrEqual(activeFetches - idleFetches, 3)
+        tracker.stop()
+    }
 }

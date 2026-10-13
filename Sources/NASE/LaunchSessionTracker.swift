@@ -39,6 +39,7 @@ final class LaunchSessionTracker {
     var onBackendUnreachable: (_ timedOut: Bool) -> Void = { _ in }
 
     private let pollInterval: Duration
+    private let idlePollInterval: Duration
     private let pollTimeout: Duration
     private let handoffInterval: Duration
     private var poller: Task<Void, Never>?
@@ -47,13 +48,19 @@ final class LaunchSessionTracker {
     private var exitWatchersBySessionID: [String: [ExitWatcher]] = [:]
     private var isRefreshing = false
     private var pollAttempt = 0
+    /// Poll quickly only while a game is launching or running. Idle polls
+    /// still matter: the backend's reconcile closes a Steam client NASE
+    /// started once its game has exited.
+    private var hasActiveSessions = false
 
     init(
         pollInterval: Duration = .seconds(3),
+        idlePollInterval: Duration = .seconds(30),
         pollTimeout: Duration = .seconds(20),
         handoffInterval: Duration = .seconds(2)
     ) {
         self.pollInterval = pollInterval
+        self.idlePollInterval = idlePollInterval
         self.pollTimeout = pollTimeout
         self.handoffInterval = handoffInterval
     }
@@ -88,12 +95,12 @@ final class LaunchSessionTracker {
         if isPolling { return }
         pollerGeneration &+= 1
         let generation = pollerGeneration
-        poller = Task { [weak self, pollInterval] in
+        poller = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
                 await self.refreshNow()
                 do {
-                    try await Task.sleep(for: pollInterval)
+                    try await Task.sleep(for: self.hasActiveSessions ? self.pollInterval : self.idlePollInterval)
                 } catch {
                     // Only a real cancellation should end the poller.
                     if Task.isCancelled { break }
@@ -156,7 +163,8 @@ final class LaunchSessionTracker {
     }
 
     /// Re-check every couple of seconds after a launch is handed off, until
-    /// `isPending` reports the launch has settled or been superseded.
+    /// `isPending` reports the game has started, failed, or been superseded;
+    /// the poller tracks it from there.
     func followHandoff(while isPending: @escaping () -> Bool) {
         Task { [weak self, handoffInterval] in
             while !Task.isCancelled {
@@ -177,6 +185,14 @@ final class LaunchSessionTracker {
     /// Keep one exit watcher per PID of each active session, so a game's exit
     /// triggers a reconcile immediately rather than on the next poll.
     func watch(_ activeSessions: [GameLaunchSession]) {
+        let wasActive = hasActiveSessions
+        hasActiveSessions = !activeSessions.isEmpty
+        if hasActiveSessions, !wasActive {
+            // Cut a long idle sleep short so a new game is polled promptly.
+            poller?.cancel()
+            poller = nil
+            ensurePolling()
+        }
         let activeSessionIDs = Set(activeSessions.map(\.sessionID))
         for sessionID in exitWatchersBySessionID.keys where !activeSessionIDs.contains(sessionID) {
             exitWatchersBySessionID.removeValue(forKey: sessionID)

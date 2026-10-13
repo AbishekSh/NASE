@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import os
+import shlex
 from pathlib import Path
 import shutil
 import signal
@@ -18,7 +19,7 @@ from .runtime import download, run_logged, run_logged_detached, supports_wow64
 from .pe import executable_architecture
 from .d3dmetal import d3dmetal_launch_environment
 from .sessions import ACTIVE_STATUSES, reconcile_sessions, steam_is_running, stop_session
-from .steam_ownership import windows_launch_executables
+from .steam_ownership import windows_launch_options
 
 
 @dataclass(frozen=True)
@@ -733,19 +734,49 @@ def install_app(
 _HELPER_EXECUTABLE_MARKERS = ("crash", "uploader", "reporter", "unins", "setup", "redist", "prereq", "updater")
 
 
-def guess_game_executable(install_dir: Path, appid: str | None = None) -> Path:
-    """Pick the executable Steam would launch, or the most likely one.
+@dataclass(frozen=True)
+class GameLaunch:
+    executable: Path
+    arguments: list[str]
+    working_dir: Path
 
-    Steam's cached launch configuration is authoritative. Without it, helper
-    tools are ruled out by name and the largest remaining executable wins,
-    because alphabetical order picks tools like crash_uploader.exe.
+
+def _split_launch_arguments(arguments: str) -> list[str]:
+    try:
+        return shlex.split(arguments)
+    except ValueError:
+        # An unbalanced quote in Steam's metadata should not block the launch.
+        return arguments.split()
+
+
+def resolve_game_launch(install_dir: Path, appid: str | None = None) -> GameLaunch:
+    """Return how Steam would start the game, or the most likely executable.
+
+    Steam's cached launch configuration is authoritative and also supplies the
+    arguments and working directory some games need. Without it, helper tools
+    are ruled out by name and the largest remaining executable wins, because
+    alphabetical order picks tools like crash_uploader.exe.
     """
     if appid:
-        for relative in windows_launch_executables(steam_core_root(), appid):
-            candidate = install_dir / relative.replace("\\", "/")
-            if candidate.suffix.lower() == ".exe" and candidate.is_file():
-                return candidate
+        for option in windows_launch_options(steam_core_root(), appid):
+            candidate = install_dir / option.executable.replace("\\", "/")
+            if candidate.suffix.lower() != ".exe" or not candidate.is_file():
+                continue
+            working_dir = install_dir / option.working_dir.replace("\\", "/") if option.working_dir else candidate.parent
+            return GameLaunch(
+                executable=candidate,
+                arguments=_split_launch_arguments(option.arguments),
+                working_dir=working_dir if working_dir.is_dir() else candidate.parent,
+            )
+    executable = _likely_game_executable(install_dir)
+    return GameLaunch(executable=executable, arguments=[], working_dir=executable.parent)
 
+
+def guess_game_executable(install_dir: Path, appid: str | None = None) -> Path:
+    return resolve_game_launch(install_dir, appid).executable
+
+
+def _likely_game_executable(install_dir: Path) -> Path:
     candidates = sorted(install_dir.glob("*.exe"))
     if not candidates:
         raise FileNotFoundError(f"No .exe files found in {install_dir}")
