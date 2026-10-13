@@ -18,6 +18,7 @@ from .runtime import download, run_logged, run_logged_detached, supports_wow64
 from .pe import executable_architecture
 from .d3dmetal import d3dmetal_launch_environment
 from .sessions import ACTIVE_STATUSES, reconcile_sessions, steam_is_running, stop_session
+from .steam_ownership import windows_launch_executables
 
 
 @dataclass(frozen=True)
@@ -728,21 +729,41 @@ def install_app(
     )
 
 
-def guess_game_executable(install_dir: Path) -> Path:
+# Executables shipped beside a game that are not the game itself.
+_HELPER_EXECUTABLE_MARKERS = ("crash", "uploader", "reporter", "unins", "setup", "redist", "prereq", "updater")
+
+
+def guess_game_executable(install_dir: Path, appid: str | None = None) -> Path:
+    """Pick the executable Steam would launch, or the most likely one.
+
+    Steam's cached launch configuration is authoritative. Without it, helper
+    tools are ruled out by name and the largest remaining executable wins,
+    because alphabetical order picks tools like crash_uploader.exe.
+    """
+    if appid:
+        for relative in windows_launch_executables(steam_core_root(), appid):
+            candidate = install_dir / relative.replace("\\", "/")
+            if candidate.suffix.lower() == ".exe" and candidate.is_file():
+                return candidate
+
     candidates = sorted(install_dir.glob("*.exe"))
     if not candidates:
         raise FileNotFoundError(f"No .exe files found in {install_dir}")
 
-    def rank(path: Path) -> tuple[int, str]:
+    def rank(path: Path) -> tuple[int, int, str]:
         name = path.name.lower()
         penalty = 0
-        if "crashhandler" in name:
+        if any(marker in name for marker in _HELPER_EXECUTABLE_MARKERS):
             penalty += 100
-        if "unins" in name or "setup" in name or "launcher" in name:
+        if "launcher" in name:
             penalty += 50
         if path.stem.lower() == install_dir.name.lower():
             penalty -= 20
-        return penalty, name
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        return penalty, -size, name
 
     return min(candidates, key=rank)
 

@@ -17,6 +17,11 @@ from .state_files import atomic_write_json, exclusive_lock
 
 ACTIVE_STATUSES = {"launching", "running", "stopping"}
 LAUNCH_GRACE_SECONDS = 45
+# Steam may update the game, sync Cloud saves, or show a prompt before it
+# starts the game, so a launch handed to Steam waits longer while Steam runs.
+STEAM_HANDOFF_GRACE_SECONDS = 600
+STEAM_HANDOFF_STRATEGIES = {"steam", "steam-fallback"}
+_STEAM_PROCESS_PATTERN = re.compile(r"(?:^|/)steam(?:\.exe)?(?:\s|$)")
 PROCESS_EXIT_GRACE_SECONDS = 3
 STEAM_CLEANUP_GRACE_SECONDS = 60
 STEAM_CLOUD_QUIET_SECONDS = 30
@@ -98,15 +103,18 @@ def _prefix_pids(prefix: str) -> set[int]:
     return {int(line) for line in result.stdout.splitlines() if line.strip().isdigit()}
 
 
+def _steam_in_prefix(processes: dict[int, str], prefix_pids: set[int]) -> bool:
+    return any(
+        _STEAM_PROCESS_PATTERN.search(processes.get(pid, "").replace("\\", "/").lower())
+        for pid in prefix_pids
+    )
+
+
 def steam_is_running(prefix: str) -> bool:
     processes = _processes()
     if processes is None:
         return False
-    for pid in _prefix_pids(prefix):
-        command = processes.get(pid, "").replace("\\", "/").lower()
-        if re.search(r"(?:^|/)steam(?:\.exe)?(?:\s|$)", command):
-            return True
-    return False
+    return _steam_in_prefix(processes, _prefix_pids(prefix))
 
 
 def _steam_has_active_work(prefix: str) -> bool:
@@ -386,9 +394,26 @@ def reconcile_sessions() -> list[dict[str, Any]]:
             changed_ids.add(str(session.get("session_id")))
         else:
             last_seen_at = session.get("last_seen_at")
-            launch_grace_expired = now - float(session.get("started_at") or now) >= LAUNCH_GRACE_SECONDS
+            launch_age = now - float(session.get("started_at") or now)
+            launch_grace_expired = launch_age >= LAUNCH_GRACE_SECONDS
             exit_grace_expired = isinstance(last_seen_at, (int, float)) and now - last_seen_at >= PROCESS_EXIT_GRACE_SECONDS
             if not launch_grace_expired and not exit_grace_expired:
+                continue
+            if (
+                last_seen_at is None
+                and session.get("strategy") in STEAM_HANDOFF_STRATEGIES
+                and launch_age < STEAM_HANDOFF_GRACE_SECONDS
+                and _steam_in_prefix(processes, prefix_cache[prefix])
+            ):
+                message = (
+                    "Steam is updating the game before it starts."
+                    if _steam_has_active_work(prefix)
+                    else "Waiting for Steam to start the game."
+                )
+                if session.get("message") != message:
+                    session["message"] = message
+                    session["updated_at"] = now
+                    changed_ids.add(str(session.get("session_id")))
                 continue
             session["pids"] = []
             session["status"] = "exited"
