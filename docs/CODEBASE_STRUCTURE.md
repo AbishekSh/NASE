@@ -217,11 +217,6 @@ is documented in `docs/RELEASING.md`.
 - `scanner.py`: local game folder signal detection.
 - `advisor.py`: rule-based dependency recommendations from scanner signals.
 
-### Secondary UI
-
-- `webui.py`: simple local browser frontend. This predates the richer SwiftUI product but remains useful for quick manual operation and backend debugging.
-- `gui.py`: thin GUI/browser launcher glue.
-
 ## Multi-Store Source Architecture
 
 `sources/base.py` defines the narrow normalized contract shared by store adapters:

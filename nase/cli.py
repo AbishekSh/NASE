@@ -2668,12 +2668,6 @@ def cmd_smart_launch_game(args: argparse.Namespace) -> None:
     print(message)
 
 
-def cmd_gui(args: argparse.Namespace) -> None:
-    from .gui import launch_gui
-
-    launch_gui(args)
-
-
 def _resolve_debug_executable(args: argparse.Namespace) -> Path:
     if args.exe:
         return Path(args.exe)
@@ -3262,10 +3256,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Allow DXMT versions outside the validated 0.70/0.71 path during --fix",
     )
     doctor_cmd.set_defaults(func=cmd_doctor)
-
-    gui_cmd = sub.add_parser("gui", help="Open the simple desktop frontend")
-    gui_cmd.add_argument("--no-browser", action="store_true", help="Start the local UI server without opening a browser")
-    gui_cmd.set_defaults(func=cmd_gui)
 
     sub.add_parser("list-games", help="List installed Steam games discovered from manifests").set_defaults(func=cmd_list_games)
 
