@@ -72,46 +72,33 @@ struct SteamIdentityStatus {
     let activeSteamProfiles: [String]
 }
 
-private actor BackendStreamAccumulator {
+/// Splits backend output into trimmed, non-empty lines as chunks arrive.
+private struct BackendOutputLines {
     private var buffer = Data()
-    private var plainTextLines: [String] = []
-    private var finalResponse: BackendResponse?
 
-    func append(_ chunk: Data) {
+    mutating func append(_ chunk: Data) -> [String] {
         buffer.append(chunk)
-    }
-
-    func popReadyLines() -> [String] {
         var lines: [String] = []
         while let newlineIndex = buffer.firstIndex(of: 0x0A) {
             let lineData = buffer[..<newlineIndex]
             buffer.removeSubrange(...newlineIndex)
-            guard let line = String(data: Data(lineData), encoding: .utf8) else { continue }
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard trimmed.isEmpty == false else { continue }
-            lines.append(trimmed)
+            if let line = Self.trimmed(Data(lineData)) {
+                lines.append(line)
+            }
         }
         return lines
     }
 
-    func appendPlainText(_ line: String) {
-        plainTextLines.append(line)
+    /// Return a final line that had no trailing newline.
+    mutating func finish() -> String? {
+        defer { buffer = Data() }
+        return Self.trimmed(buffer)
     }
 
-    func setFinalResponse(_ response: BackendResponse) {
-        finalResponse = response
-    }
-
-    func appendTrailing(_ data: Data) -> String? {
-        buffer.append(data)
-        guard buffer.isEmpty == false, let trailing = String(data: buffer, encoding: .utf8) else { return nil }
-        buffer = Data()
-        let trimmed = trailing.trimmingCharacters(in: .whitespacesAndNewlines)
+    private static func trimmed(_ data: Data) -> String? {
+        guard let line = String(data: data, encoding: .utf8) else { return nil }
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
-    }
-
-    func snapshot() -> (plainTextLines: [String], finalResponse: BackendResponse?) {
-        (plainTextLines, finalResponse)
     }
 }
 
@@ -626,12 +613,16 @@ enum BackendBridge {
         ) { _, appValue in appValue }
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-            process.waitUntilExit()
-            return process.terminationStatus == 0
-        } catch {
-            return false
+        return await withCheckedContinuation { continuation in
+            process.terminationHandler = { process in
+                continuation.resume(returning: process.terminationStatus == 0)
+            }
+            do {
+                try process.run()
+            } catch {
+                process.terminationHandler = nil
+                continuation.resume(returning: false)
+            }
         }
     }
 
@@ -676,7 +667,34 @@ enum BackendBridge {
             input = nil
         }
 
-        try process.run()
+        // Output and exit are both delivered through handlers, so no thread
+        // blocks while the backend runs. Both are installed before `run()`: a
+        // termination handler added afterwards can miss a command that exits
+        // immediately.
+        let (chunks, chunkStream) = AsyncStream.makeStream(of: Data.self)
+        output.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+                chunkStream.finish()
+            } else {
+                chunkStream.yield(data)
+            }
+        }
+        let (exits, exitStream) = AsyncStream.makeStream(of: Int32.self)
+        process.terminationHandler = { process in
+            exitStream.yield(process.terminationStatus)
+            exitStream.finish()
+        }
+
+        do {
+            try process.run()
+        } catch {
+            output.fileHandleForReading.readabilityHandler = nil
+            chunkStream.finish()
+            exitStream.finish()
+            throw error
+        }
         if case .epicAuthenticate(let code) = action {
             input?.fileHandleForWriting.write(Data((code + "\n").utf8))
             try? input?.fileHandleForWriting.close()
@@ -684,13 +702,15 @@ enum BackendBridge {
             input?.fileHandleForWriting.write(Data((code + "\n").utf8))
             try? input?.fileHandleForWriting.close()
         }
-        let result = try await collectStreamingResult(
-            from: process,
-            output: output,
-            action: action,
-            onUpdate: onUpdate
-        )
-        return result
+        return try await withTaskCancellationHandler {
+            try await collectStreamingResult(chunks: chunks, exits: exits, action: action, onUpdate: onUpdate)
+        } onCancel: {
+            // An abandoned request must not leave its backend process running.
+            // The backend treats SIGTERM as cancellation and rolls back safely.
+            if process.isRunning {
+                process.terminate()
+            }
+        }
     }
 
     static func arguments(for action: BackendAction, context: BackendContext) -> [String] {
@@ -914,82 +934,60 @@ enum BackendBridge {
         return try? JSONDecoder().decode(BackendJSONResponse.self, from: data)
     }
 
+    /// Plain-text lines kept for error messages; older lines are dropped so a
+    /// chatty command cannot grow memory without bound.
+    private static let retainedPlainTextLines = 400
+
     private static func collectStreamingResult(
-        from process: Process,
-        output: Pipe,
+        chunks: AsyncStream<Data>,
+        exits: AsyncStream<Int32>,
         action: BackendAction,
         onUpdate: @escaping @Sendable (BackendStreamUpdate) async -> Void
     ) async throws -> BackendResponse {
-        let state = BackendStreamAccumulator()
-        let handle = output.fileHandleForReading
-        // Await one serialized reader so a fast backend process cannot terminate
-        // before detached readability-handler work stores its final JSON result.
-        let reader = Task.detached(priority: .utility) {
-            while true {
-                let chunk = handle.availableData
-                guard chunk.isEmpty == false else { break }
-                await state.append(chunk)
-                let lines = await state.popReadyLines()
-                for trimmed in lines {
-                    if let payload = parseJSONLine(trimmed) {
-                        let response = makeResponse(from: payload)
-                        if payload.event == "result" || payload.event == nil {
-                            await state.setFinalResponse(response)
-                        }
-                        await onUpdate(
-                            BackendStreamUpdate(
-                                job: parseJob(from: payload),
-                                structured: parseStructuredResult(from: payload)
-                            )
-                        )
-                    } else {
-                        await state.appendPlainText(trimmed)
-                    }
+        var lines = BackendOutputLines()
+        var plainTextLines: [String] = []
+        var finalResponse: BackendResponse?
+
+        func handle(_ line: String) async {
+            guard let payload = parseJSONLine(line) else {
+                plainTextLines.append(line)
+                if plainTextLines.count > retainedPlainTextLines {
+                    plainTextLines.removeFirst(plainTextLines.count - retainedPlainTextLines)
                 }
+                return
             }
+            if payload.event == "result" || payload.event == nil {
+                finalResponse = makeResponse(from: payload)
+            }
+            await onUpdate(
+                BackendStreamUpdate(
+                    job: parseJob(from: payload),
+                    structured: parseStructuredResult(from: payload)
+                )
+            )
         }
 
-        // `Process.terminationHandler` can miss very short-lived commands when
-        // it is installed after `run()`. Waiting on a utility task is safe for
-        // already-terminated processes and prevents a completed backend action
-        // from remaining active forever in the SwiftUI job list.
-        await Task.detached(priority: .utility) {
-            process.waitUntilExit()
-        }.value
-
-        await reader.value
-        if let trimmed = await state.appendTrailing(Data()) {
-            if trimmed.isEmpty == false {
-                if let payload = parseJSONLine(trimmed) {
-                    let response = makeResponse(from: payload)
-                    if payload.event == "result" || payload.event == nil {
-                        await state.setFinalResponse(response)
-                    }
-                    await onUpdate(
-                        BackendStreamUpdate(
-                            job: parseJob(from: payload),
-                            structured: parseStructuredResult(from: payload)
-                        )
-                    )
-                } else {
-                    await state.appendPlainText(trimmed)
-                }
+        for await chunk in chunks {
+            for line in lines.append(chunk) {
+                await handle(line)
             }
         }
-
-        let snapshot = await state.snapshot()
-        let finalResponse = snapshot.finalResponse
-        let plainTextLines = snapshot.plainTextLines
+        if let trailing = lines.finish() {
+            await handle(trailing)
+        }
+        var exitIterator = exits.makeAsyncIterator()
+        let terminationStatus = await exitIterator.next() ?? -1
+        try Task.checkCancellation()
 
         if let finalResponse {
-            if process.terminationStatus != 0 {
+            if terminationStatus != 0 {
                 switch action {
                 case .doctor, .doctorFix:
                     return finalResponse
                 default:
                     throw NSError(
                         domain: "NASE.BackendBridge",
-                        code: Int(process.terminationStatus),
+                        code: Int(terminationStatus),
                         userInfo: [NSLocalizedDescriptionKey: finalResponse.output]
                     )
                 }
@@ -998,11 +996,11 @@ enum BackendBridge {
         }
 
         let plainText = plainTextLines.joined(separator: "\n")
-        if process.terminationStatus != 0 {
+        if terminationStatus != 0 {
             let message = plainText.isEmpty ? "Command failed." : plainText
             throw NSError(
                 domain: "NASE.BackendBridge",
-                code: Int(process.terminationStatus),
+                code: Int(terminationStatus),
                 userInfo: [NSLocalizedDescriptionKey: message]
             )
         }
