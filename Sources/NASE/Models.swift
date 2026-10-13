@@ -468,7 +468,6 @@ struct OperationCard: Identifiable {
 }
 
 enum OperationKind {
-    case setupMetal
     case doctor
     case doctorFix
     case winetricks

@@ -485,7 +485,6 @@ enum BackendAction {
     case resetCompatibilityProfile(GraphicsBackendOption)
     case resetGameOverlay(gameID: String)
     case attachSteamLibraries(GraphicsBackendOption)
-    case setupMetal
     case doctor
     case doctorFix
     case runWinetricks(verbs: [String], interactive: Bool = false)
@@ -548,7 +547,7 @@ enum BackendBridge {
             ]
         case .steam:
             var commands = [
-                BackendCommand(title: "Setup Metal", command: preview(.setupMetal, context: context)),
+                BackendCommand(title: "Set Up DXMT Profile", command: preview(.setupCompatibilityProfile(.dxmt), context: context)),
                 BackendCommand(title: "Doctor", command: preview(.doctor, context: context)),
                 BackendCommand(title: "Wine Configuration", command: preview(.openWinecfg, context: context)),
                 BackendCommand(title: "Open Steam", command: preview(.openSteam, context: context)),
@@ -568,7 +567,6 @@ enum BackendBridge {
                 BackendCommand(title: "Doctor", command: preview(.doctor, context: context)),
                 BackendCommand(title: "Doctor + Fix", command: preview(.doctorFix, context: context)),
                 BackendCommand(title: "Wine Configuration", command: preview(.openWinecfg, context: context)),
-                BackendCommand(title: "Setup Metal", command: preview(.setupMetal, context: context)),
             ]
         case .mac:
             return [
@@ -796,8 +794,6 @@ enum BackendBridge {
             return base + ["reset-game-overlay", "--game-id", gameID, "--confirm"]
         case .attachSteamLibraries:
             return base + ["attach-steam-library", "--all"]
-        case .setupMetal:
-            return base + ["setup-metal", "--dxmt-source", context.dxmtSource, "--no-wait"]
         case .doctor:
             return base + ["doctor"]
         case .doctorFix:

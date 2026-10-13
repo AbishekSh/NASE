@@ -60,7 +60,7 @@ final class BackendBridgeTests: XCTestCase {
 
     func testWineMutatingActionsCarrySelectedWinePath() {
         let actions: [BackendAction] = [
-            .setupMetal,
+            .setupCompatibilityProfile(.dxmt),
             .doctorFix,
             .runWinetricks(verbs: ["vcrun2022"], interactive: false),
             .installDXMT,

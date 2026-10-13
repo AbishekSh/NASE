@@ -145,6 +145,12 @@ The backend is a CLI-first engine. It should remain usable from Terminal while a
 
 The CLI is the compatibility contract. Existing commands should keep working even when the app gains richer structured behavior.
 
+Setup has two commands on purpose. The app sets up every bottle with
+`setup-compatibility-profile`, which binds the profile manifest, shares the
+Steam client, attaches libraries, verifies the renderer, and rolls back on
+failure. `setup-metal` is the older Terminal path and the only one that
+prepares an external prefix; the app no longer calls it.
+
 ### Runtime And Bottles
 
 - `runtime.py`: executable resolution, Wine runtime detection, process execution, detached process spawning, downloads, and sanitized Metal-related environment handling.

@@ -247,7 +247,7 @@ struct SettingsSheet: View {
             switch operation.kind {
             case .installDXMT, .installD3DMetal, .openSteam, .refreshGames, .launchSelectedGame, .killWine:
                 return false
-            case .setupMetal, .doctor, .doctorFix, .winetricks, .winecfg:
+            case .doctor, .doctorFix, .winetricks, .winecfg:
                 return true
             }
         }

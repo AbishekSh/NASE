@@ -78,7 +78,6 @@ final class AppViewModel {
     private var provisioningProfiles: Set<GraphicsBackendOption> = []
     var isBusy: Bool {
         isDependencyBootstrapRunning
-            || isActionRunning(.setupMetal)
             || isActionRunning(.doctorFix)
             || isActionRunning(.installDXMT)
             || isActionRunning(.installDXVK)
@@ -386,7 +385,7 @@ final class AppViewModel {
             switch currentOperationJob.action {
             case "Doctor", "Doctor + Fix":
                 return latestDoctorResult
-            case "Setup Metal":
+            case "Set Up Compatibility Profile", "Repair Compatibility Profile":
                 return latestSetupResult
             default:
                 break
@@ -1152,11 +1151,12 @@ final class AppViewModel {
                     self.dependencyBootstrapProgress = 0.8
                 }
                 let profileContext = configuredContext.compatibilityContext(for: .dxmt)
-                _ = try await BackendBridge.executeStreaming(.setupCompatibilityProfile(.dxmt), context: profileContext) { update in
+                let setup = try await BackendBridge.executeStreaming(.setupCompatibilityProfile(.dxmt), context: profileContext) { update in
                     if let message = update.job?.message {
                         await MainActor.run { self.dependencyBootstrapMessage = message }
                     }
                 }
+                await MainActor.run { self.latestSetupResult = setup.structured }
                 _ = try await BackendBridge.execute(.openSteam, context: profileContext)
 
                 await MainActor.run {
@@ -1945,8 +1945,6 @@ final class AppViewModel {
     func perform(_ operation: OperationCard) {
         let action: BackendAction
         switch operation.kind {
-        case .setupMetal:
-            action = .setupMetal
         case .doctor:
             action = .doctor
         case .doctorFix:
@@ -3274,7 +3272,7 @@ final class AppViewModel {
             break
         case .doctor, .doctorFix:
             latestDoctorResult = structured
-        case .setupMetal:
+        case .setupCompatibilityProfile, .repairCompatibilityProfile:
             latestSetupResult = structured
         case .listGames:
             latestScanResult = structured
@@ -3288,7 +3286,7 @@ final class AppViewModel {
         switch action {
         case .doctor, .doctorFix:
             current = latestDoctorResult
-        case .setupMetal:
+        case .setupCompatibilityProfile, .repairCompatibilityProfile:
             current = latestSetupResult
         default:
             current = nil
@@ -3383,8 +3381,6 @@ final class AppViewModel {
             return "Reset Game Overlay"
         case .attachSteamLibraries:
             return "Attach Shared Steam Libraries"
-        case .setupMetal:
-            return "Finish Setup"
         case .doctor:
             return "Inspect Environment"
         case .doctorFix:
@@ -3478,8 +3474,6 @@ final class AppViewModel {
             return "Per-game overlay was reset."
         case .attachSteamLibraries:
             return "Shared Steam libraries attached."
-        case .setupMetal:
-            return "Setup finished."
         case .doctor:
             return "Environment check finished."
         case .doctorFix:
