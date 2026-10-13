@@ -233,19 +233,31 @@ def app_info(steam_root: Path) -> tuple[dict[int, tuple[str, str]], list[str]]:
 _NON_GAME_LAUNCH_TYPES = {"server", "editor", "vr"}
 
 
-def windows_launch_executables(steam_root: Path, appid: str) -> list[str]:
-    """Return the game's Windows launch executables, in Steam's own order.
+@dataclass(frozen=True)
+class SteamLaunchOption:
+    """One Windows launch entry, as Steam stores it.
 
-    Paths are relative to the install directory as Steam stores them, so they
-    may use backslashes. Beta-only and server/editor/VR options are skipped.
-    An empty list means the cache had no usable launch configuration.
+    Paths are relative to the install directory and may use backslashes;
+    ``arguments`` is the raw command-line string Steam passes to the game.
+    """
+
+    executable: str
+    arguments: str = ""
+    working_dir: str = ""
+
+
+def windows_launch_options(steam_root: Path, appid: str) -> list[SteamLaunchOption]:
+    """Return the game's Windows launch options, in Steam's own order.
+
+    Beta-only and server/editor/VR options are skipped. An empty list means
+    the cache had no usable launch configuration.
     """
     if not str(appid).isdigit():
         return []
     for _appid, root in _iter_app_records(steam_root, [], {int(appid)}):
         config = root.get("config") if isinstance(root.get("config"), dict) else {}
         launch = config.get("launch") if isinstance(config.get("launch"), dict) else {}
-        executables: list[str] = []
+        options: list[SteamLaunchOption] = []
         for key in sorted(launch, key=lambda item: int(item) if str(item).isdigit() else len(launch)):
             entry = launch[key]
             if not isinstance(entry, dict):
@@ -258,8 +270,14 @@ def windows_launch_executables(steam_root: Path, appid: str) -> list[str]:
                 continue
             executable = entry.get("executable")
             if isinstance(executable, str) and executable:
-                executables.append(executable)
-        return executables
+                options.append(
+                    SteamLaunchOption(
+                        executable=executable,
+                        arguments=str(entry.get("arguments") or ""),
+                        working_dir=str(entry.get("workingdir") or ""),
+                    )
+                )
+        return options
     return []
 
 

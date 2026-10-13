@@ -133,14 +133,14 @@ class SteamOwnershipTests(unittest.TestCase):
         games, _ = steam_ownership.owned_games(self.root)
         self.assertEqual([game.name for game in games], ["Table Format Game"])
 
-    def test_windows_launch_executables_follow_steam_launch_order(self) -> None:
+    def test_windows_launch_options_follow_steam_launch_order(self) -> None:
         self._write(
             apps=_appinfo(
                 {250900: ("The Binding of Isaac: Rebirth", "Game"), 10: ("Other", "Game")},
                 magic=0x07564429,
                 launch={
                     250900: [
-                        {"executable": "isaac-ng.exe", "oslist": "windows"},
+                        {"executable": "isaac-ng.exe", "arguments": "-windowed --lang=en", "workingdir": "bin", "oslist": "windows"},
                         {"executable": "run-x64.sh", "oslist": "linux"},
                         {"executable": "beta\\isaac-beta.exe", "oslist": "windows", "betakey": "beta"},
                         {"executable": "server.exe", "type": "server"},
@@ -150,11 +150,14 @@ class SteamOwnershipTests(unittest.TestCase):
             ),
         )
         self.assertEqual(
-            steam_ownership.windows_launch_executables(self.root, "250900"),
-            ["isaac-ng.exe", "bin\\tool.exe"],
+            steam_ownership.windows_launch_options(self.root, "250900"),
+            [
+                steam_ownership.SteamLaunchOption("isaac-ng.exe", "-windowed --lang=en", "bin"),
+                steam_ownership.SteamLaunchOption("bin\\tool.exe"),
+            ],
         )
-        self.assertEqual(steam_ownership.windows_launch_executables(self.root, "10"), [])
-        self.assertEqual(steam_ownership.windows_launch_executables(self.root, "999"), [])
+        self.assertEqual(steam_ownership.windows_launch_options(self.root, "10"), [])
+        self.assertEqual(steam_ownership.windows_launch_options(self.root, "999"), [])
 
     def test_unknown_format_degrades_with_a_warning(self) -> None:
         self._write(

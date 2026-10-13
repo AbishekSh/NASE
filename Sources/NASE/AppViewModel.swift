@@ -518,7 +518,7 @@ final class AppViewModel {
         sessionTracker.followHandoff { [weak self] in
             guard let self else { return false }
             return generation == self.launchStateGeneration
-                && self.launchStatusByPinID[game.pinID]?.phase.isActive == true
+                && self.launchStatusByPinID[game.pinID]?.phase == .launching
         }
     }
 

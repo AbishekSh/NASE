@@ -8,6 +8,7 @@ from unittest.mock import patch
 from nase.bottle import Bottle
 import nase.steam as steam
 from nase.steam import run_steam, steam_client_is_ready, validate_executable_compatibility
+from nase.steam_ownership import SteamLaunchOption
 
 
 class SteamLaunchTests(unittest.TestCase):
@@ -166,19 +167,35 @@ class GameExecutableTests(unittest.TestCase):
     def test_steam_launch_config_names_the_executable(self) -> None:
         (self.install_dir / "bin").mkdir()
         (self.install_dir / "bin" / "game.exe").write_bytes(b"MZ")
-        with patch.object(steam, "windows_launch_executables", return_value=["bin\\game.exe"]):
+        with patch.object(steam, "windows_launch_options", return_value=[SteamLaunchOption("bin\\game.exe")]):
             chosen = steam.guess_game_executable(self.install_dir, "250900")
         self.assertEqual(chosen, self.install_dir / "bin" / "game.exe")
 
     def test_helper_tools_lose_to_the_game_without_launch_config(self) -> None:
-        with patch.object(steam, "windows_launch_executables", return_value=[]):
+        with patch.object(steam, "windows_launch_options", return_value=[]):
             chosen = steam.guess_game_executable(self.install_dir, "250900")
         self.assertEqual(chosen.name, "isaac-ng.exe")
 
     def test_missing_configured_executable_falls_back_to_heuristic(self) -> None:
-        with patch.object(steam, "windows_launch_executables", return_value=["gone.exe"]):
+        with patch.object(steam, "windows_launch_options", return_value=[SteamLaunchOption("gone.exe")]):
             chosen = steam.guess_game_executable(self.install_dir, "250900")
         self.assertEqual(chosen.name, "isaac-ng.exe")
+
+    def test_steam_launch_options_supply_arguments_and_working_directory(self) -> None:
+        (self.install_dir / "data").mkdir()
+        option = SteamLaunchOption("isaac-ng.exe", '-windowed --profile "Save One"', "data")
+        with patch.object(steam, "windows_launch_options", return_value=[option]):
+            launch = steam.resolve_game_launch(self.install_dir, "250900")
+        self.assertEqual(launch.executable.name, "isaac-ng.exe")
+        self.assertEqual(launch.arguments, ["-windowed", "--profile", "Save One"])
+        self.assertEqual(launch.working_dir, self.install_dir / "data")
+
+    def test_missing_working_directory_and_bad_quoting_still_launch(self) -> None:
+        option = SteamLaunchOption("isaac-ng.exe", '-mode "unterminated', "gone")
+        with patch.object(steam, "windows_launch_options", return_value=[option]):
+            launch = steam.resolve_game_launch(self.install_dir, "250900")
+        self.assertEqual(launch.arguments, ["-mode", '"unterminated'])
+        self.assertEqual(launch.working_dir, self.install_dir)
 
 
 if __name__ == "__main__":
