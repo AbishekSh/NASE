@@ -4,27 +4,6 @@ import Foundation
 import Observation
 import UniformTypeIdentifiers
 
-/// Watches one PID for termination via kqueue (EVFILT_PROC/NOTE_EXIT) so a
-/// game's exit is observed the instant it happens instead of waiting for the
-/// next poll. This only tells us "wake up and reconcile now" — reconcile
-/// against the backend's session record remains the source of truth for
-/// whether the game actually exited.
-private final class ExitWatcher {
-    let pid: Int
-    private let source: DispatchSourceProcess
-
-    init(pid: Int, onExit: @escaping () -> Void) {
-        self.pid = pid
-        source = DispatchSource.makeProcessSource(identifier: pid_t(pid), eventMask: .exit, queue: .main)
-        source.setEventHandler(handler: onExit)
-        source.resume()
-    }
-
-    deinit {
-        source.cancel()
-    }
-}
-
 private enum MemoryLimit {
     static let activityLogCharacters = 120_000
     static let displayedLogBytes = 256 * 1024
@@ -189,18 +168,10 @@ final class AppViewModel {
     let keyboardRemap = KeyboardRemapService()
     private let libraryPersistence: any LibraryPersisting
     private var launchStateGeneration = 0
-    @ObservationIgnored private var launchSessionMonitor: Task<Void, Never>?
-    @ObservationIgnored private var applicationActivationObserver: NSObjectProtocol?
-    @ObservationIgnored private var exitWatchersBySessionID: [String: [ExitWatcher]] = [:]
+    @ObservationIgnored private let sessionTracker = LaunchSessionTracker()
     @ObservationIgnored private var macAppObservers: [String: NSObjectProtocol] = [:]
     fileprivate var steamMetadataByAppID: [String: SteamLocalMetadata] = [:]
     private var runningHealthChecks = Set<RunnerKind>()
-    private var isRefreshingLaunchSessions = false
-    @ObservationIgnored private var launchSessionPollAttempt = 0
-
-    /// How long one `list-sessions` poll may run before the poller gives up on
-    /// it and reconciles from local process state instead.
-    private static let launchSessionPollTimeoutSeconds = 20
 
     var managedBottleNames: [String] {
         let root = appSupportRootURL.appendingPathComponent("bottles", isDirectory: true)
@@ -260,6 +231,19 @@ final class AppViewModel {
         migrateLegacyImportedAppIdentity()
         refreshWineRuntimes()
         selectedGame = nil
+        sessionTracker.fetchSessions = { [weak self] in
+            guard let context = await self?.backendContext else { return nil }
+            return try? await BackendBridge.execute(.listSessions, context: context).sessions
+        }
+        sessionTracker.onSessions = { [weak self] sessions in
+            self?.applyLaunchSessions(sessions)
+        }
+        sessionTracker.onBackendUnreachable = { [weak self] timedOut in
+            if timedOut {
+                self?.appendLog("Launch session poll timed out; falling back to local process checks.")
+            }
+            self?.expireSessionsWithDeadProcesses()
+        }
         if !UserDefaults.standard.bool(forKey: "onboarding.hasSeenSetupWizard") {
             isShowingSetupWizard = true
         }
@@ -527,66 +511,14 @@ final class AppViewModel {
     }
 
     private func refreshLaunchSessions() {
-        Task { [weak self] in
-            await self?.refreshLaunchSessionsNow()
-        }
-    }
-
-    /// Reconcile launch state against the backend.
-    ///
-    /// Every exit path must clear `isRefreshingLaunchSessions`, and the backend
-    /// call must be bounded: a single call that never returns used to wedge the
-    /// in-flight flag permanently, silently killing every later poll and leaving
-    /// finished games stuck on "Running" until the app was relaunched.
-    private func refreshLaunchSessionsNow() async {
-        guard !isRefreshingLaunchSessions else { return }
-        launchSessionPollAttempt &+= 1
-        let attempt = launchSessionPollAttempt
-        isRefreshingLaunchSessions = true
-        let context = backendContext
-        // Watchdog: if this call never comes back, release the in-flight flag
-        // anyway so the next tick can try again. Bumping the attempt token stops
-        // the abandoned call from later clearing a newer poll's flag; a late
-        // reply is otherwise harmless and just applies its sessions when it lands.
-        let watchdog = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(Self.launchSessionPollTimeoutSeconds))
-            guard let self, !Task.isCancelled, self.launchSessionPollAttempt == attempt else { return }
-            self.launchSessionPollAttempt &+= 1
-            self.isRefreshingLaunchSessions = false
-            self.appendLog("Launch session poll timed out; falling back to local process checks.")
-            self.expireSessionsWithDeadProcesses()
-        }
-        let response = await Task.detached(priority: .utility) {
-            let response = try? await BackendBridge.execute(.listSessions, context: context)
-            return response
-        }.value
-        watchdog.cancel()
-        if launchSessionPollAttempt == attempt {
-            isRefreshingLaunchSessions = false
-        }
-        if let response {
-            applyLaunchSessions(response.sessions)
-        } else {
-            // The backend did not answer. Fall back to checking the PIDs we
-            // already recorded so a game that exited still clears.
-            expireSessionsWithDeadProcesses()
-        }
+        sessionTracker.refresh()
     }
 
     private func reconcileLaunchStateAfterHandoff(for game: LibraryGame, generation: Int) {
-        Task { [weak self] in
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(for: .seconds(2))
-                } catch {
-                    return
-                }
-                guard let self, generation == self.launchStateGeneration else { return }
-                await self.refreshLaunchSessionsNow()
-                if self.launchStatusByPinID[game.pinID]?.phase.isActive != true {
-                    return
-                }
-            }
+        sessionTracker.followHandoff { [weak self] in
+            guard let self else { return false }
+            return generation == self.launchStateGeneration
+                && self.launchStatusByPinID[game.pinID]?.phase.isActive == true
         }
     }
 
@@ -613,7 +545,7 @@ final class AppViewModel {
         }
         syncExitWatchers()
         syncKeyboardRemap()
-        restartLaunchSessionMonitorIfNeeded()
+        sessionTracker.ensurePolling()
     }
 
     /// Clear any active game whose recorded processes are all gone.
@@ -678,33 +610,8 @@ final class AppViewModel {
         }
     }
 
-    /// Keep one ExitWatcher per PID of every currently active launch session,
-    /// so a game's death is observed immediately rather than on the next poll.
     private func syncExitWatchers() {
-        let activeSessions = launchSessionByPinID.values.filter(\.isActive)
-        let activeSessionIDs = Set(activeSessions.map(\.sessionID))
-        for sessionID in exitWatchersBySessionID.keys where !activeSessionIDs.contains(sessionID) {
-            exitWatchersBySessionID.removeValue(forKey: sessionID)
-        }
-        for session in activeSessions {
-            let currentPIDs = Set(session.pids)
-            guard !currentPIDs.isEmpty else { continue }
-            let watchedPIDs = Set((exitWatchersBySessionID[session.sessionID] ?? []).map(\.pid))
-            guard currentPIDs != watchedPIDs else { continue }
-            let sessionID = session.sessionID
-            exitWatchersBySessionID[sessionID] = currentPIDs.map { pid in
-                ExitWatcher(pid: pid) { [weak self] in
-                    Task { @MainActor [weak self] in
-                        self?.handleWatchedProcessExit(sessionID: sessionID)
-                    }
-                }
-            }
-        }
-    }
-
-    private func handleWatchedProcessExit(sessionID: String) {
-        guard exitWatchersBySessionID[sessionID] != nil else { return }
-        refreshLaunchSessions()
+        sessionTracker.watch(launchSessionByPinID.values.filter(\.isActive))
     }
 
     private func launchSession(_ session: GameLaunchSession, belongsTo game: LibraryGame) -> Bool {
@@ -2158,9 +2065,7 @@ final class AppViewModel {
         Task {
             do {
                 _ = try await BackendBridge.execute(.killWine, context: context)
-                launchSessionMonitor?.cancel()
-                launchSessionMonitor = nil
-                exitWatchersBySessionID.removeAll()
+                sessionTracker.stop()
                 launchStateGeneration += 1
                 uninstallStatusMessage = removeManagedData
                     ? "Removing NASE-managed data and settings…"
@@ -2466,8 +2371,7 @@ final class AppViewModel {
         refreshWineRuntimes()
         // Start launch tracking before anything can return early. A failed
         // preflight must not leave games permanently stuck on "Running".
-        restartLaunchSessionMonitorIfNeeded()
-        observeApplicationActivation()
+        sessionTracker.start()
         guard backendPreflightState == .unchecked else { return }
         backendPreflightState = .checking
         let context = backendContext
@@ -2495,50 +2399,7 @@ final class AppViewModel {
 
     private func startBackendServices() {
         refreshBackendJobs()
-        restartLaunchSessionMonitorIfNeeded()
-        observeApplicationActivation()
-    }
-
-    /// Start the launch-session poller, or restart it if it ever finished.
-    ///
-    /// This loop is what turns "the game exited" into "the card cleared". It
-    /// previously exited for good on the first `Task.sleep` cancellation and
-    /// nothing re-armed it, which left games showing "Running" indefinitely.
-    private func restartLaunchSessionMonitorIfNeeded() {
-        if let monitor = launchSessionMonitor, !monitor.isCancelled { return }
-        launchSessionMonitor = Task { [weak self] in
-            while !Task.isCancelled {
-                guard let self else { return }
-                await self.refreshLaunchSessionsNow()
-                do {
-                    try await Task.sleep(for: .seconds(3))
-                } catch {
-                    // Only a real cancellation should end the poller.
-                    if Task.isCancelled { break }
-                }
-            }
-            // Leave the slot empty so this poller can always be re-armed.
-            await MainActor.run { [weak self] in
-                self?.launchSessionMonitor = nil
-            }
-        }
-    }
-
-    /// Reconcile immediately whenever NASE comes back to the foreground, so a
-    /// game closed while the app was in the background clears on first sight.
-    private func observeApplicationActivation() {
-        guard applicationActivationObserver == nil else { return }
-        applicationActivationObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didBecomeActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.restartLaunchSessionMonitorIfNeeded()
-                self.refreshLaunchSessions()
-            }
-        }
+        sessionTracker.start()
     }
 
     func testSettings(winePath: String, dxmtSource: String, bottleName: String, externalPrefix: String?, useExternalPrefix: Bool) -> String {

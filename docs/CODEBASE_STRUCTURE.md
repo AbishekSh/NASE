@@ -94,6 +94,10 @@ The SwiftUI layer owns library UX, app state, settings, sheets, and backend comm
 - `BackendJobStore.swift`: the app's view of backend jobs (active and recent),
   including the placeholder shown until the backend reports its own job. It
   holds state only; `AppViewModel.runBackendJob` drives it from the bridge.
+- `LaunchSessionTracker.swift`: decides when launch sessions are reconciled with
+  the backend: the bounded `list-sessions` poller and its watchdog, refresh on
+  app activation and after a launch hand-off, and per-PID exit watchers. What
+  the sessions mean for each game stays in `AppViewModel`.
 
 `AppViewModel.swift` is currently the largest file and is the main pressure point. Future work should move cohesive domains out only when the new file has a clear boundary, for example:
 
