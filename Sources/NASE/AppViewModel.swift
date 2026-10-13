@@ -1346,39 +1346,23 @@ final class AppViewModel {
         installingRuntimeID = runtime.id
         appendLog("== Install Runtime ==\n\(BackendBridge.preview(action, context: backendContext))")
         rightPanelMessage = "Installing \(runtime.displayName)..."
-        let activeJobID = beginBackendJob(for: action, message: "Installing \(runtime.displayName)...")
-        let context = backendContext
-
-        Task.detached(priority: .userInitiated) {
-            do {
-                let response = try await BackendBridge.executeStreaming(action, context: context) { update in
-                    await MainActor.run {
-                        self.applyStreamUpdate(update, fallbackActiveJobID: activeJobID, action: action)
-                    }
-                }
-                await MainActor.run {
-                    if let responseJob = response.job {
-                        self.reconcileDetachedJob(responseJob, fallbackActiveJobID: activeJobID)
-                    } else {
-                        let fallbackJob = self.makeFallbackJob(for: action, status: .completed, message: "Installed \(runtime.displayName).")
-                        self.completeBackendJob(activeJobID, finalJob: fallbackJob)
-                    }
-                    self.appendLog(response.output)
-                    self.rightPanelMessage = "Installed \(runtime.displayName)."
-                    self.installingRuntimeID = nil
-                    self.refreshRuntimeCenter()
-                    self.refreshWineRuntimes()
-                    self.refreshDependencyStatus()
-                }
-            } catch {
-                await MainActor.run {
-                    let message = error.localizedDescription
-                    let fallbackJob = self.makeFallbackJob(for: action, status: .failed, message: message)
-                    self.completeBackendJob(activeJobID, finalJob: fallbackJob)
-                    self.appendLog("Runtime install failed:\n\(message)")
-                    self.rightPanelMessage = "Runtime install failed."
-                    self.installingRuntimeID = nil
-                }
+        runBackendJob(
+            action,
+            context: backendContext,
+            message: "Installing \(runtime.displayName)...",
+            successMessage: "Installed \(runtime.displayName)."
+        ) { result in
+            self.installingRuntimeID = nil
+            switch result {
+            case .success(let response):
+                self.appendLog(response.output)
+                self.rightPanelMessage = "Installed \(runtime.displayName)."
+                self.refreshRuntimeCenter()
+                self.refreshWineRuntimes()
+                self.refreshDependencyStatus()
+            case .failure(let error):
+                self.appendLog("Runtime install failed:\n\(error.localizedDescription)")
+                self.rightPanelMessage = "Runtime install failed."
             }
         }
     }
@@ -2116,49 +2100,30 @@ final class AppViewModel {
 
         rightPanelMessage = "Running \(operation.title)..."
         appendLog("== \(operation.title) ==\n\(BackendBridge.preview(action, context: context))")
-        let activeJobID = beginBackendJob(for: action, message: "Running \(operation.title)...")
-        Task.detached(priority: .userInitiated) {
-            do {
-                let response = try await BackendBridge.executeStreaming(action, context: context) { update in
-                    await MainActor.run {
-                        self.applyStreamUpdate(update, fallbackActiveJobID: activeJobID, action: action)
+        runBackendJob(action, context: context, message: "Running \(operation.title)...") { result in
+            switch result {
+            case .success(let response):
+                self.recordStructuredResult(response.structured, for: action)
+                switch action {
+                case .listGames:
+                    self.discoveredSteamGames = self.mappedSteamGames(from: response.games)
+                    if self.selectedRunner == .steam, let first = self.filteredGames.first {
+                        self.selectedGame = first
                     }
-                }
-                await MainActor.run {
-                    if let responseJob = response.job {
-                        self.reconcileDetachedJob(responseJob, fallbackActiveJobID: activeJobID)
+                case .doctor, .doctorFix:
+                    if let structured = response.structured {
+                        self.updateHealth(for: self.selectedRunner ?? .steam, from: structured)
                     } else {
-                        let fallbackJob = self.makeFallbackJob(for: action, status: .completed, message: self.jobSuccessMessage(for: action))
-                        self.completeBackendJob(activeJobID, finalJob: fallbackJob)
+                        self.updateHealth(for: self.selectedRunner ?? .steam, from: response.output)
                     }
-                    self.recordStructuredResult(response.structured, for: action)
-                    switch action {
-                    case .listGames:
-                        self.discoveredSteamGames = self.mappedSteamGames(from: response.games)
-                        if self.selectedRunner == .steam, let first = self.filteredGames.first {
-                            self.selectedGame = first
-                        }
-                    case .doctor, .doctorFix:
-                        if let structured = response.structured {
-                            self.updateHealth(for: self.selectedRunner ?? .steam, from: structured)
-                        } else {
-                            self.updateHealth(for: self.selectedRunner ?? .steam, from: response.output)
-                        }
-                    default:
-                        break
-                    }
-                    self.appendLog(response.output)
-                    self.rightPanelMessage = response.job?.message ?? "\(operation.title) finished."
+                default:
+                    break
                 }
-            } catch {
-                await MainActor.run {
-                    if self.activeBackendJobs.contains(where: { $0.id == activeJobID }) {
-                        let failedJob = self.makeFallbackJob(for: action, status: .failed, message: "\(operation.title) failed.")
-                        self.completeBackendJob(activeJobID, finalJob: failedJob)
-                    }
-                    self.appendLog("Command failed:\n\(error.localizedDescription)")
-                    self.rightPanelMessage = "\(operation.title) failed."
-                }
+                self.appendLog(response.output)
+                self.rightPanelMessage = response.job?.message ?? "\(operation.title) finished."
+            case .failure(let error):
+                self.appendLog("Command failed:\n\(error.localizedDescription)")
+                self.rightPanelMessage = "\(operation.title) failed."
             }
         }
     }
@@ -2882,7 +2847,6 @@ final class AppViewModel {
         guard !isActionRunning(.listGames) else { return }
 
         let action: BackendAction = .listGames
-        let activeJobID = beginBackendJob(for: action, message: announce ? "Refreshing Steam library..." : "Detecting installed Steam games...")
         hasAttemptedSteamDetection = true
         if announce {
             rightPanelMessage = "Refreshing installed Steam games..."
@@ -2891,31 +2855,23 @@ final class AppViewModel {
             rightPanelMessage = "Detecting installed Steam games..."
         }
 
-        Task {
-            do {
-                let response = try await BackendBridge.executeStreaming(action, context: backendContext) { update in
-                    await MainActor.run {
-                        self.applyStreamUpdate(update, fallbackActiveJobID: activeJobID, action: action)
-                    }
-                }
-                if response.job == nil {
-                    let fallbackJob = makeFallbackJob(for: action, status: .completed, message: jobSuccessMessage(for: action))
-                    completeBackendJob(activeJobID, finalJob: fallbackJob)
-                }
-                steamMetadataByAppID = loadSteamMetadata(for: response.games)
-                discoveredSteamGames = mappedSteamGames(from: response.games)
-                selectedGame = filteredGames.first
-                appendLog(response.output)
-                rightPanelMessage = discoveredSteamGames.isEmpty
+        runBackendJob(
+            action,
+            context: backendContext,
+            message: announce ? "Refreshing Steam library..." : "Detecting installed Steam games..."
+        ) { result in
+            switch result {
+            case .success(let response):
+                self.steamMetadataByAppID = self.loadSteamMetadata(for: response.games)
+                self.discoveredSteamGames = self.mappedSteamGames(from: response.games)
+                self.selectedGame = self.filteredGames.first
+                self.appendLog(response.output)
+                self.rightPanelMessage = self.discoveredSteamGames.isEmpty
                     ? "No installed Steam games were detected."
-                    : "Detected \(discoveredSteamGames.count) installed Steam game(s)."
-            } catch {
-                if activeBackendJobs.contains(where: { $0.id == activeJobID }) {
-                    let failedJob = makeFallbackJob(for: action, status: .failed, message: "Refresh Games failed.")
-                    completeBackendJob(activeJobID, finalJob: failedJob)
-                }
-                appendLog("Command failed:\n\(error.localizedDescription)")
-                rightPanelMessage = "Steam game detection failed."
+                    : "Detected \(self.discoveredSteamGames.count) installed Steam game(s)."
+            case .failure(let error):
+                self.appendLog("Command failed:\n\(error.localizedDescription)")
+                self.rightPanelMessage = "Steam game detection failed."
             }
         }
     }
@@ -3332,32 +3288,24 @@ final class AppViewModel {
         guard (runner == .steam || runner == .wine), !runningHealthChecks.contains(runner) else { return }
 
         runningHealthChecks.insert(runner)
-        let activeJobID = beginBackendJob(for: .doctor, message: "Background doctor running for \(runner.rawValue)...")
-        Task {
-            defer { runningHealthChecks.remove(runner) }
-            do {
-                let response = try await BackendBridge.executeStreaming(.doctor, context: backendContext) { update in
-                    await MainActor.run {
-                        self.applyStreamUpdate(update, fallbackActiveJobID: activeJobID, action: .doctor)
-                    }
-                }
-                if response.job == nil {
-                    let fallbackJob = makeFallbackJob(for: .doctor, status: .completed, message: "Doctor finished.")
-                    completeBackendJob(activeJobID, finalJob: fallbackJob)
-                }
+        runBackendJob(
+            .doctor,
+            context: backendContext,
+            message: "Background doctor running for \(runner.rawValue)...",
+            successMessage: "Doctor finished."
+        ) { result in
+            self.runningHealthChecks.remove(runner)
+            switch result {
+            case .success(let response):
                 if let structured = response.structured {
-                    latestDoctorResult = structured
-                    updateHealth(for: runner, from: structured)
+                    self.latestDoctorResult = structured
+                    self.updateHealth(for: runner, from: structured)
                 } else {
-                    updateHealth(for: runner, from: response.output)
+                    self.updateHealth(for: runner, from: response.output)
                 }
-            } catch {
-                if activeBackendJobs.contains(where: { $0.id == activeJobID }) {
-                    let failedJob = makeFallbackJob(for: .doctor, status: .failed, message: "Doctor failed.")
-                    completeBackendJob(activeJobID, finalJob: failedJob)
-                }
-                sourceHealth[runner] = .warning
-                persistSourceHealth()
+            case .failure:
+                self.sourceHealth[runner] = .warning
+                self.persistSourceHealth()
             }
         }
     }
@@ -3424,6 +3372,43 @@ final class AppViewModel {
         activeBackendJobs.removeAll { $0.action == job.action && $0.status == .started }
         activeBackendJobs.insert(job, at: 0)
         return job.id
+    }
+
+    /// Run a backend action as a tracked job.
+    ///
+    /// Progress streams into the job list. When the backend finishes, the job is
+    /// closed from its own result, or from a fallback when it reported none, and
+    /// `completion` runs on the main actor with the response or the error.
+    private func runBackendJob(
+        _ action: BackendAction,
+        context: BackendContext,
+        message: String? = nil,
+        successMessage: String? = nil,
+        completion: @escaping (Result<BackendResponse, Error>) -> Void
+    ) {
+        let activeJobID = beginBackendJob(for: action, message: message)
+        Task {
+            do {
+                let response = try await BackendBridge.executeStreaming(action, context: context) { update in
+                    await MainActor.run {
+                        self.applyStreamUpdate(update, fallbackActiveJobID: activeJobID, action: action)
+                    }
+                }
+                if let responseJob = response.job {
+                    reconcileDetachedJob(responseJob, fallbackActiveJobID: activeJobID)
+                } else {
+                    let message = successMessage ?? jobSuccessMessage(for: action)
+                    completeBackendJob(activeJobID, finalJob: makeFallbackJob(for: action, status: .completed, message: message))
+                }
+                completion(.success(response))
+            } catch {
+                if activeBackendJobs.contains(where: { $0.id == activeJobID }) {
+                    let message = "\(actionDisplayName(action)) failed."
+                    completeBackendJob(activeJobID, finalJob: makeFallbackJob(for: action, status: .failed, message: message))
+                }
+                completion(.failure(error))
+            }
+        }
     }
 
     private func isActionRunning(_ action: BackendAction) -> Bool {
@@ -3908,136 +3893,116 @@ final class AppViewModel {
                 setLaunchStatus(.launching, for: game, message: "Sending launch request...")
             }
         }
-        let activeJobID = beginBackendJob(for: action)
         let actionLaunchGeneration = launchStateGeneration
-
-        Task.detached(priority: .userInitiated) {
-            do {
-                let response = try await BackendBridge.executeStreaming(action, context: context) { update in
-                    await MainActor.run {
-                        self.applyStreamUpdate(update, fallbackActiveJobID: activeJobID, action: action)
-                    }
+        runBackendJob(action, context: context) { result in
+            switch result {
+            case .success(let response):
+                if response.structured != nil {
+                    self.recordStructuredResult(response.structured, for: action)
                 }
-                await MainActor.run {
-                    if let responseJob = response.job {
-                        self.reconcileDetachedJob(responseJob, fallbackActiveJobID: activeJobID)
-                    } else {
-                        let fallbackJob = self.makeFallbackJob(for: action, status: .completed, message: self.jobSuccessMessage(for: action))
-                        self.completeBackendJob(activeJobID, finalJob: fallbackJob)
-                    }
-                    if response.structured != nil {
-                        self.recordStructuredResult(response.structured, for: action)
-                    }
-                    if case .discoverD3DMetal = action,
-                       let winePath = response.structured?.gptkWinePath,
-                       let source = response.structured?.d3dMetalSource {
-                        self.backendContext = self.backendContext.overridingGPTK(
-                            winePath: winePath,
-                            d3dMetalSource: source
+                if case .discoverD3DMetal = action,
+                   let winePath = response.structured?.gptkWinePath,
+                   let source = response.structured?.d3dMetalSource {
+                    self.backendContext = self.backendContext.overridingGPTK(
+                        winePath: winePath,
+                        d3dMetalSource: source
+                    )
+                    self.backendContext.persist()
+                    self.refreshDependencyStatus()
+                }
+                if case .importGPTK = action,
+                   let winePath = response.structured?.gptkWinePath,
+                   let source = response.structured?.d3dMetalSource {
+                    self.backendContext = self.backendContext.overridingGPTK(
+                        winePath: winePath,
+                        d3dMetalSource: source
+                    )
+                    self.backendContext.persist()
+                    self.refreshDependencyStatus()
+                }
+                self.appendLog(response.output)
+                self.rightPanelMessage = response.job?.message ?? successMessage
+                if case .killWine = action {
+                    self.clearWindowsLaunchStateAfterEmergencyStop()
+                    self.refreshLaunchSessions()
+                }
+                if case .installHostDependency(let dependencyID, _) = action {
+                    if dependencyID == "wine-stable",
+                       let winePath = response.runtimes.first(where: { $0.id == "wine-stable-11.0_1-gcenx" })?.executable {
+                        self.backendContext = self.contextAdoptingWineStable(
+                            winePath,
+                            baseContext: self.backendContext
                         )
                         self.backendContext.persist()
-                        self.refreshDependencyStatus()
+                        self.rightPanelMessage = "Installed and selected managed Wine Stable 11."
                     }
-                    if case .importGPTK = action,
-                       let winePath = response.structured?.gptkWinePath,
-                       let source = response.structured?.d3dMetalSource {
-                        self.backendContext = self.backendContext.overridingGPTK(
-                            winePath: winePath,
-                            d3dMetalSource: source
-                        )
-                        self.backendContext.persist()
-                        self.refreshDependencyStatus()
-                    }
-                    self.appendLog(response.output)
-                    self.rightPanelMessage = response.job?.message ?? successMessage
-                    if case .killWine = action {
-                        self.clearWindowsLaunchStateAfterEmergencyStop()
-                        self.refreshLaunchSessions()
-                    }
-                    if case .installHostDependency(let dependencyID, _) = action {
-                        if dependencyID == "wine-stable",
-                           let winePath = response.runtimes.first(where: { $0.id == "wine-stable-11.0_1-gcenx" })?.executable {
-                            self.backendContext = self.contextAdoptingWineStable(
-                                winePath,
-                                baseContext: self.backendContext
-                            )
-                            self.backendContext.persist()
-                            self.rightPanelMessage = "Installed and selected managed Wine Stable 11."
-                        }
-                        self.refreshRuntimeCenter()
-                        self.refreshWineRuntimes()
-                        self.refreshDependencyStatus()
-                        self.installingDependencyID = nil
-                    }
-                    if case .installRuntime = action {
-                        self.installingRuntimeID = nil
-                    }
-                    if let game, actionLaunchGeneration == self.launchStateGeneration {
-                        if case .sourceGameAction = action {
-                            self.clearLaunchStatus(for: game)
-                            if game.runner == .gog {
-                                self.refreshGOGLibrary(forceRefresh: false)
-                            } else {
-                                self.refreshEpicLibrary(forceRefresh: false)
-                            }
-                        } else if response.sessions.isEmpty {
-                            self.setLaunchStatus(.launching, for: game, message: "Waiting for the game process...")
+                    self.refreshRuntimeCenter()
+                    self.refreshWineRuntimes()
+                    self.refreshDependencyStatus()
+                    self.installingDependencyID = nil
+                }
+                if case .installRuntime = action {
+                    self.installingRuntimeID = nil
+                }
+                if let game, actionLaunchGeneration == self.launchStateGeneration {
+                    if case .sourceGameAction = action {
+                        self.clearLaunchStatus(for: game)
+                        if game.runner == .gog {
+                            self.refreshGOGLibrary(forceRefresh: false)
                         } else {
-                            self.applyLaunchSessions(response.sessions)
+                            self.refreshEpicLibrary(forceRefresh: false)
                         }
-                        if self.launchStatusByPinID[game.pinID]?.phase.isActive == true {
-                            self.reconcileLaunchStateAfterHandoff(
-                                for: game,
-                                generation: actionLaunchGeneration
-                            )
-                        }
+                    } else if response.sessions.isEmpty {
+                        self.setLaunchStatus(.launching, for: game, message: "Waiting for the game process...")
+                    } else {
+                        self.applyLaunchSessions(response.sessions)
                     }
-                    onSuccess?()
+                    if self.launchStatusByPinID[game.pinID]?.phase.isActive == true {
+                        self.reconcileLaunchStateAfterHandoff(
+                            for: game,
+                            generation: actionLaunchGeneration
+                        )
+                    }
                 }
-            } catch {
-                await MainActor.run {
-                    if self.activeBackendJobs.contains(where: { $0.id == activeJobID }) {
-                        let failedJob = self.makeFallbackJob(for: action, status: .failed, message: "\(self.actionDisplayName(action)) failed.")
-                        self.completeBackendJob(activeJobID, finalJob: failedJob)
-                    }
-                    let fullError = error.localizedDescription
-                    self.appendLog("Command failed:\n\(fullError)")
-                    self.rightPanelMessage = "Action failed."
-                    if case .installHostDependency = action {
-                        self.installingDependencyID = nil
-                    }
-                    if case .installRuntime = action {
-                        self.installingRuntimeID = nil
-                    }
-                    if case .setupCompatibilityProfile(let profile) = action {
-                        self.provisioningProfiles.remove(profile)
-                    }
-                    if case .repairCompatibilityProfile(let profile) = action {
-                        self.provisioningProfiles.remove(profile)
-                    }
-                    if let game, actionLaunchGeneration == self.launchStateGeneration {
-                        self.setLaunchStatus(.failed, for: game, message: self.launchFailureSummary(from: fullError))
-                    }
-                    if self.shouldPresentFailureAlert(for: action) {
-                        let alert = NSAlert()
-                        alert.messageText = "Action failed"
-                        alert.informativeText = self.launchFailureSummary(from: fullError)
-                        alert.addButton(withTitle: "Open Full Error")
-                        alert.addButton(withTitle: "OK")
-                        let response = alert.runModal()
-                        if response == .alertFirstButtonReturn {
-                            self.selectedLogTitle = "Action Error"
-                            self.selectedLogEntries = [
-                                DisplayedLogEntry(
-                                    id: "launch-error",
-                                    title: "Action Error",
-                                    text: fullError
-                                ),
-                            ]
-                            self.selectedLogEntryID = "launch-error"
-                            self.selectedLogText = fullError
-                            self.isShowingLogViewer = true
-                        }
+                onSuccess?()
+            case .failure(let error):
+                let fullError = error.localizedDescription
+                self.appendLog("Command failed:\n\(fullError)")
+                self.rightPanelMessage = "Action failed."
+                if case .installHostDependency = action {
+                    self.installingDependencyID = nil
+                }
+                if case .installRuntime = action {
+                    self.installingRuntimeID = nil
+                }
+                if case .setupCompatibilityProfile(let profile) = action {
+                    self.provisioningProfiles.remove(profile)
+                }
+                if case .repairCompatibilityProfile(let profile) = action {
+                    self.provisioningProfiles.remove(profile)
+                }
+                if let game, actionLaunchGeneration == self.launchStateGeneration {
+                    self.setLaunchStatus(.failed, for: game, message: self.launchFailureSummary(from: fullError))
+                }
+                if self.shouldPresentFailureAlert(for: action) {
+                    let alert = NSAlert()
+                    alert.messageText = "Action failed"
+                    alert.informativeText = self.launchFailureSummary(from: fullError)
+                    alert.addButton(withTitle: "Open Full Error")
+                    alert.addButton(withTitle: "OK")
+                    let response = alert.runModal()
+                    if response == .alertFirstButtonReturn {
+                        self.selectedLogTitle = "Action Error"
+                        self.selectedLogEntries = [
+                            DisplayedLogEntry(
+                                id: "launch-error",
+                                title: "Action Error",
+                                text: fullError
+                            ),
+                        ]
+                        self.selectedLogEntryID = "launch-error"
+                        self.selectedLogText = fullError
+                        self.isShowingLogViewer = true
                     }
                 }
             }
