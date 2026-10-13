@@ -131,6 +131,9 @@ The backend is a CLI-first engine. It should remain usable from Terminal while a
   - Global runtime selection: `--wine` / related Wine path flags.
   - Structured modes: `--json` and `--jsonl`.
   - Job events: start, step, progress, result.
+  - Handlers report through one `Output` object (`start`, `step`, `done`,
+    `fail`). It renders JSONL events, a single JSON result, or Terminal text,
+    so commands never branch on the output mode themselves.
   - Commands include setup, doctor, Steam launch, game launch, direct debug launch, Winetricks, graphics installers, scanning, and advice.
 
 The CLI is the compatibility contract. Existing commands should keep working even when the app gains richer structured behavior.
