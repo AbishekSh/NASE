@@ -12,6 +12,7 @@ from typing import Any
 
 from .bottle import Bottle, app_support_root
 from .library_activity import reconcile_shared_steam_client
+from .state_files import atomic_write_json, exclusive_lock
 
 
 ACTIVE_STATUSES = {"launching", "running", "stopping"}
@@ -38,11 +39,13 @@ def _load() -> list[dict[str, Any]]:
 
 
 def _save(sessions: list[dict[str, Any]]) -> None:
-    path = _registry_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps({"sessions": sessions}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    atomic_write_json(_registry_path(), {"sessions": sessions})
+
+
+def _registry_lock():
+    # Every load-modify-save of the registry must hold this lock: launches,
+    # stops, and the app's session poll all run in separate processes.
+    return exclusive_lock(_registry_path().with_suffix(".lock"))
 
 
 def _processes() -> dict[int, str] | None:
@@ -230,46 +233,129 @@ def create_session(
         "steam_cleanup_after": None,
         "steam_cleanup_status": "not-owned" if not steam_started_by_nase else "pending",
     }
-    sessions = _load()
-    for item in sessions:
-        if item.get("status") in ACTIVE_STATUSES and appid and item.get("appid") == appid and item.get("prefix") == str(bottle.prefix):
-            item["status"] = "exited"
-            item["updated_at"] = now
-            item["message"] = "Superseded by a newer launch request."
-    sessions.append(session)
-    _save(sessions[-200:])
+    with _registry_lock():
+        sessions = _load()
+        for item in sessions:
+            if item.get("status") in ACTIVE_STATUSES and appid and item.get("appid") == appid and item.get("prefix") == str(bottle.prefix):
+                item["status"] = "exited"
+                item["updated_at"] = now
+                item["message"] = "Superseded by a newer launch request."
+        sessions.append(session)
+        _save(sessions[-200:])
     return session
 
 
 def update_session(session_id: str, **changes: Any) -> dict[str, Any] | None:
-    sessions = _load()
-    updated = None
-    for session in sessions:
-        if session.get("session_id") == session_id:
-            session.update(changes)
-            session["updated_at"] = time.time()
-            updated = session
-            break
-    _save(sessions)
+    with _registry_lock():
+        sessions = _load()
+        updated = None
+        for session in sessions:
+            if session.get("session_id") == session_id:
+                session.update(changes)
+                session["updated_at"] = time.time()
+                updated = session
+                break
+        _save(sessions)
     return updated
 
 
 def mark_steam_opened_by_user(prefix: str) -> None:
     """Relinquish automatic cleanup when the user explicitly opens Steam."""
-    sessions = _load()
-    changed = False
-    for session in sessions:
-        if session.get("prefix") != prefix or not session.get("steam_started_by_nase"):
-            continue
-        if session.get("status") not in ACTIVE_STATUSES and session.get("steam_cleanup_status") != "pending":
-            continue
-        session["steam_started_by_nase"] = False
-        session["steam_cleanup_after"] = None
-        session["steam_cleanup_status"] = "user-owned"
-        session["updated_at"] = time.time()
-        changed = True
-    if changed:
-        _save(sessions)
+    with _registry_lock():
+        sessions = _load()
+        changed = False
+        for session in sessions:
+            if session.get("prefix") != prefix or not session.get("steam_started_by_nase"):
+                continue
+            if session.get("status") not in ACTIVE_STATUSES and session.get("steam_cleanup_status") != "pending":
+                continue
+            session["steam_started_by_nase"] = False
+            session["steam_cleanup_after"] = None
+            session["steam_cleanup_status"] = "user-owned"
+            session["updated_at"] = time.time()
+            changed = True
+        if changed:
+            _save(sessions)
+
+
+def _merge_reconciled(
+    reconciled: list[dict[str, Any]],
+    loaded_versions: dict[str, Any],
+    changed_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Save reconciled sessions without discarding concurrent writes.
+
+    Process inspection runs without the registry lock because lsof can take
+    seconds. Only sessions this pass changed are written back, and only when no
+    other process updated them meanwhile; sessions created during the pass are
+    kept. A skipped session is settled by the next reconcile.
+    """
+    by_id = {str(item.get("session_id")): item for item in reconciled if str(item.get("session_id")) in changed_ids}
+    with _registry_lock():
+        current = _load()
+        merged = []
+        for item in current:
+            session_id = str(item.get("session_id"))
+            if session_id in by_id and item.get("updated_at") == loaded_versions.get(session_id):
+                merged.append(by_id[session_id])
+            else:
+                merged.append(item)
+        _save(merged)
+    return merged
+
+
+def _clean_up_finished_steam_sessions(now: float) -> list[dict[str, Any]]:
+    """Close Steam instances NASE started once their game has finished.
+
+    This holds the registry lock so a game launching into the same prefix
+    cannot be registered between the active-prefix check and the shutdown.
+    """
+    with _registry_lock():
+        sessions = _load()
+        active_prefixes = {
+            str(item.get("prefix") or "")
+            for item in sessions
+            if item.get("status") in ACTIVE_STATUSES
+        }
+        changed = False
+        for session in sessions:
+            cleanup_after = session.get("steam_cleanup_after")
+            if (
+                not session.get("steam_started_by_nase")
+                or session.get("steam_cleanup_status") != "pending"
+                or not isinstance(cleanup_after, (int, float))
+                or now < cleanup_after
+            ):
+                continue
+            prefix = str(session.get("prefix") or "")
+            if prefix in active_prefixes:
+                continue
+            if _steam_has_active_work(prefix):
+                session["steam_cleanup_after"] = now + 30
+                session["message"] = "Game exited; waiting for Steam downloads or Cloud sync to finish."
+            elif not steam_is_running(prefix):
+                session["steam_cleanup_status"] = "already-closed"
+            elif _request_steam_shutdown(session):
+                session["steam_cleanup_status"] = "shutdown-requested"
+                session["message"] = "Game exited; closing the Steam session started by NASE."
+            else:
+                session["steam_cleanup_status"] = "shutdown-failed"
+                session["message"] = "Game exited; Steam could not be closed automatically."
+            session["updated_at"] = now
+            changed = True
+        if changed:
+            _save(sessions)
+    return sessions
+
+
+def _steam_cleanup_is_due(sessions: list[dict[str, Any]], now: float) -> bool:
+    return any(
+        session.get("steam_started_by_nase")
+        and session.get("steam_cleanup_status") == "pending"
+        and isinstance(session.get("steam_cleanup_after"), (int, float))
+        and now >= session["steam_cleanup_after"]
+        for session in sessions
+    )
 
 
 def reconcile_sessions() -> list[dict[str, Any]]:
@@ -280,8 +366,9 @@ def reconcile_sessions() -> list[dict[str, Any]]:
         # The process table could not be read. Report the sessions unchanged
         # rather than guessing; the next reconcile will settle them.
         return sessions
+    loaded_versions = {str(item.get("session_id")): item.get("updated_at") for item in sessions}
     now = time.time()
-    changed = False
+    changed_ids: set[str] = set()
     prefix_cache: dict[str, set[int]] = {}
     for session in sessions:
         if session.get("status") not in ACTIVE_STATUSES:
@@ -296,7 +383,7 @@ def reconcile_sessions() -> list[dict[str, Any]]:
             session["last_seen_at"] = now
             session["updated_at"] = now
             session["message"] = "Game process is running."
-            changed = True
+            changed_ids.add(str(session.get("session_id")))
         else:
             last_seen_at = session.get("last_seen_at")
             launch_grace_expired = now - float(session.get("started_at") or now) >= LAUNCH_GRACE_SECONDS
@@ -315,40 +402,12 @@ def reconcile_sessions() -> list[dict[str, Any]]:
                 session["message"] = "Game exited; allowing Steam Cloud to finish syncing."
             if last_seen_at is not None and session.get("steam_started_by_nase"):
                 session["steam_cleanup_after"] = now + STEAM_CLEANUP_GRACE_SECONDS
-            changed = True
+            changed_ids.add(str(session.get("session_id")))
 
-    active_prefixes = {
-        str(item.get("prefix") or "")
-        for item in sessions
-        if item.get("status") in ACTIVE_STATUSES
-    }
-    for session in sessions:
-        cleanup_after = session.get("steam_cleanup_after")
-        if (
-            not session.get("steam_started_by_nase")
-            or session.get("steam_cleanup_status") != "pending"
-            or not isinstance(cleanup_after, (int, float))
-            or now < cleanup_after
-        ):
-            continue
-        prefix = str(session.get("prefix") or "")
-        if prefix in active_prefixes:
-            continue
-        if _steam_has_active_work(prefix):
-            session["steam_cleanup_after"] = now + 30
-            session["message"] = "Game exited; waiting for Steam downloads or Cloud sync to finish."
-        elif not steam_is_running(prefix):
-            session["steam_cleanup_status"] = "already-closed"
-        elif _request_steam_shutdown(session):
-            session["steam_cleanup_status"] = "shutdown-requested"
-            session["message"] = "Game exited; closing the Steam session started by NASE."
-        else:
-            session["steam_cleanup_status"] = "shutdown-failed"
-            session["message"] = "Game exited; Steam could not be closed automatically."
-        session["updated_at"] = now
-        changed = True
-    if changed:
-        _save(sessions)
+    if changed_ids:
+        sessions = _merge_reconciled(sessions, loaded_versions, changed_ids)
+    if _steam_cleanup_is_due(sessions, now):
+        sessions = _clean_up_finished_steam_sessions(now)
     return sessions
 
 

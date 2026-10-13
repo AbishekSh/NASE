@@ -308,5 +308,78 @@ class LaunchSessionTests(unittest.TestCase):
             self.assertIsNone(sessions._processes())
 
 
+    def _create(self, appid: str, **extra) -> dict:
+        return sessions.create_session(
+            bottle=self.bottle,
+            appid=appid,
+            game=f"Game {appid}",
+            executable=Path(f"/games/{appid}/game.exe"),
+            install_dir=Path(f"/games/{appid}"),
+            graphics_backend="dxmt",
+            strategy="direct",
+            **extra,
+        )
+
+    def test_launch_registered_during_reconcile_is_kept(self) -> None:
+        launched: list[dict] = []
+
+        def launch_while_inspecting(_prefix: str) -> set[int]:
+            launched.append(self._create("second"))
+            return {4242}
+
+        with (
+            patch.object(sessions, "_registry_path", return_value=self.registry),
+            patch.object(sessions, "reconcile_shared_steam_client"),
+            patch.object(sessions, "_processes", return_value={4242: r"C:\games\first\game.exe"}),
+            patch.object(sessions, "_prefix_pids", side_effect=launch_while_inspecting),
+        ):
+            first = self._create("first")
+            reconciled = sessions.reconcile_sessions()
+
+        by_id = {item["session_id"]: item for item in reconciled}
+        self.assertEqual(by_id[first["session_id"]]["status"], "running")
+        self.assertEqual(by_id[launched[0]["session_id"]]["status"], "launching")
+        with patch.object(sessions, "_registry_path", return_value=self.registry):
+            stored = {item["session_id"] for item in sessions._load()}
+        self.assertIn(launched[0]["session_id"], stored)
+
+    def test_update_made_during_reconcile_is_not_overwritten(self) -> None:
+        def stop_while_inspecting(_prefix: str) -> set[int]:
+            sessions.update_session(first["session_id"], status="stopping", message="Stopping game processes.")
+            return {4242}
+
+        with (
+            patch.object(sessions, "_registry_path", return_value=self.registry),
+            patch.object(sessions, "reconcile_shared_steam_client"),
+            patch.object(sessions, "_processes", return_value={4242: r"C:\games\first\game.exe"}),
+            patch.object(sessions, "_prefix_pids", side_effect=stop_while_inspecting),
+        ):
+            first = self._create("first")
+            sessions.reconcile_sessions()
+            stored = next(item for item in sessions._load() if item["session_id"] == first["session_id"])
+
+        self.assertEqual(stored["status"], "stopping")
+
+    def test_owned_steam_stays_open_for_a_launch_registered_during_reconcile(self) -> None:
+        def launch_while_listing_processes() -> dict[int, str]:
+            self._create("second")
+            return {}
+
+        with (
+            patch.object(sessions, "_registry_path", return_value=self.registry),
+            patch.object(sessions, "reconcile_shared_steam_client"),
+            patch.object(sessions, "_processes", side_effect=launch_while_listing_processes),
+            patch.object(sessions, "_prefix_pids", return_value=set()),
+            patch.object(sessions, "_steam_has_active_work", return_value=False),
+            patch.object(sessions, "steam_is_running", return_value=True),
+            patch.object(sessions, "_request_steam_shutdown", return_value=True) as shutdown,
+        ):
+            finished = self._create("first", wine_path=Path("/usr/local/bin/wine64"), steam_started_by_nase=True)
+            sessions.update_session(finished["session_id"], status="exited", steam_cleanup_after=time.time() - 1)
+            sessions.reconcile_sessions()
+
+        shutdown.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -190,6 +190,10 @@ Treat each graphics choice as a runtime profile, not only a DLL selection. DXMT 
 - `doctor.py`: environment and prefix checks plus safe repairs.
 - `jobs.py`: atomic durable job records, interrupted-job reconciliation, and
   verified backend-process cancellation.
+- `state_files.py`: the cross-process `flock` and unique-temp-file atomic JSON
+  write shared by the job and launch-session registries. Every backend command
+  is a separate process, so each load-modify-save of shared state holds the
+  registry lock; slow process inspection stays outside it and merges back.
 
 ### Packaged application layout
 
