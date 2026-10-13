@@ -2216,7 +2216,7 @@ def cmd_launch_game(args: argparse.Namespace) -> None:
                 raise SystemExit(code)
             _json_error(args, action="launch-game", message=f"D3DMetal restore failed (exit {code}). Tail:\n{tail}", code=code)
     try:
-        executable_hint = guess_game_executable(app.install_dir)
+        executable_hint = guess_game_executable(app.install_dir, args.appid)
     except (FileNotFoundError, RuntimeError):
         executable_hint = None
     if executable_hint is not None:
@@ -2489,7 +2489,7 @@ def cmd_smart_launch_game(args: argparse.Namespace) -> None:
     executable_hint: Path | None = None
     if app is not None:
         try:
-            executable_hint = guess_game_executable(app.install_dir)
+            executable_hint = guess_game_executable(app.install_dir, args.appid)
         except (FileNotFoundError, RuntimeError):
             executable_hint = None
         if executable_hint is not None:
@@ -2524,7 +2524,7 @@ def cmd_smart_launch_game(args: argparse.Namespace) -> None:
     if skip_direct_reason is None:
         try:
             assert_direct_launch_safe(library_path=app.library_path, appid=args.appid)
-            executable = executable_hint or guess_game_executable(app.install_dir)
+            executable = executable_hint or guess_game_executable(app.install_dir, args.appid)
             code, tail = run_game_executable(
                 bottle=bottle,
                 wine64_path=wine64,
@@ -2680,7 +2680,7 @@ def _resolve_debug_executable(args: argparse.Namespace) -> Path:
     if args.appid:
         bottle = _resolve_bottle(args)
         app, _ = resolve_registered_app(bottle, args.appid)
-        return guess_game_executable(app.install_dir)
+        return guess_game_executable(app.install_dir, args.appid)
     raise SystemExit("Provide either --appid or --exe")
 
 

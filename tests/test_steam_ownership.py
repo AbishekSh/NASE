@@ -44,14 +44,35 @@ def _packageinfo(packages: dict[int, list[int]]) -> bytes:
     return payload
 
 
-def _appinfo(apps: dict[int, tuple[str, str]], *, magic: int) -> bytes:
+def _launch_entry(index: int, entry: dict[str, str], table: list[str] | None) -> bytes:
+    fields = b"".join(
+        _kv_string(key, value, table) for key, value in entry.items() if key not in {"oslist", "betakey"}
+    )
+    config = b"".join(
+        _kv_string(key, entry[key], table) for key in ("oslist", "betakey") if key in entry
+    )
+    if config:
+        fields += _kv_nested("config", config, table)
+    return _kv_nested(str(index), fields, table)
+
+
+def _appinfo(
+    apps: dict[int, tuple[str, str]],
+    *,
+    magic: int,
+    launch: dict[int, list[dict[str, str]]] | None = None,
+) -> bytes:
     uses_table = magic in steam_ownership.APPINFO_STRING_TABLE_MAGICS
     table: list[str] | None = [] if uses_table else None
 
     records = b""
     for appid, (name, app_type) in apps.items():
         common = _kv_string("name", name, table) + _kv_string("type", app_type, table)
-        body = _kv_nested("appinfo", _kv_nested("common", common, table), table) + b"\x08"
+        sections = _kv_nested("common", common, table)
+        if launch and appid in launch:
+            entries = b"".join(_launch_entry(index, entry, table) for index, entry in enumerate(launch[appid]))
+            sections += _kv_nested("config", _kv_nested("launch", entries, table), table)
+        body = _kv_nested("appinfo", sections, table) + b"\x08"
         header = b"\x00" * steam_ownership._APP_HEADER_BYTES
         records += struct.pack("<II", appid, len(header) + len(body)) + header + body
     records += struct.pack("<I", 0)
@@ -111,6 +132,29 @@ class SteamOwnershipTests(unittest.TestCase):
         )
         games, _ = steam_ownership.owned_games(self.root)
         self.assertEqual([game.name for game in games], ["Table Format Game"])
+
+    def test_windows_launch_executables_follow_steam_launch_order(self) -> None:
+        self._write(
+            apps=_appinfo(
+                {250900: ("The Binding of Isaac: Rebirth", "Game"), 10: ("Other", "Game")},
+                magic=0x07564429,
+                launch={
+                    250900: [
+                        {"executable": "isaac-ng.exe", "oslist": "windows"},
+                        {"executable": "run-x64.sh", "oslist": "linux"},
+                        {"executable": "beta\\isaac-beta.exe", "oslist": "windows", "betakey": "beta"},
+                        {"executable": "server.exe", "type": "server"},
+                        {"executable": "bin\\tool.exe"},
+                    ]
+                },
+            ),
+        )
+        self.assertEqual(
+            steam_ownership.windows_launch_executables(self.root, "250900"),
+            ["isaac-ng.exe", "bin\\tool.exe"],
+        )
+        self.assertEqual(steam_ownership.windows_launch_executables(self.root, "10"), [])
+        self.assertEqual(steam_ownership.windows_launch_executables(self.root, "999"), [])
 
     def test_unknown_format_degrades_with_a_warning(self) -> None:
         self._write(
