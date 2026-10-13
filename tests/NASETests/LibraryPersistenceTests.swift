@@ -2,19 +2,21 @@ import XCTest
 @testable import NASE
 
 final class LibraryPersistenceTests: XCTestCase {
+    /// One fixed suite, emptied around every test. macOS keeps an empty plist
+    /// for each suite name even after `removePersistentDomain`, so a fresh
+    /// UUID per test left a new file in ~/Library/Preferences on every run.
+    private static let suiteName = "NASETests.LibraryPersistence"
     private var defaults: UserDefaults!
-    private var suiteName: String!
 
     override func setUp() {
         super.setUp()
-        suiteName = "NASETests.LibraryPersistence.\(UUID().uuidString)"
-        defaults = UserDefaults(suiteName: suiteName)
+        defaults = UserDefaults(suiteName: Self.suiteName)
+        defaults.removePersistentDomain(forName: Self.suiteName)
     }
 
     override func tearDown() {
-        defaults.removePersistentDomain(forName: suiteName)
+        defaults.removePersistentDomain(forName: Self.suiteName)
         defaults = nil
-        suiteName = nil
         super.tearDown()
     }
 
