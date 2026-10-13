@@ -355,7 +355,7 @@ struct SetupWizardSheet: View {
     }
 
     private var finishSubtitle: String {
-        if let job = model.recentBackendJobs.first(where: { $0.action == "Setup Metal" }) {
+        if let job = model.jobs.recent.first(where: { $0.action == "Setup Metal" }) {
             switch job.status {
             case .completed:
                 return "OK: Steam is ready in the managed bottle."

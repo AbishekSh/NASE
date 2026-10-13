@@ -91,6 +91,9 @@ The SwiftUI layer owns library UX, app state, settings, sheets, and backend comm
   views or launch orchestration.
 - `LibraryOrdering.swift`: pure library presentation policy. Discovery order and
   storage order do not determine how the grid is sorted.
+- `BackendJobStore.swift`: the app's view of backend jobs (active and recent),
+  including the placeholder shown until the backend reports its own job. It
+  holds state only; `AppViewModel.runBackendJob` drives it from the bridge.
 
 `AppViewModel.swift` is currently the largest file and is the main pressure point. Future work should move cohesive domains out only when the new file has a clear boundary, for example:
 

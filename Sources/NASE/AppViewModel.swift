@@ -152,8 +152,7 @@ final class AppViewModel {
     var selectedLogEntryID: String?
     var expandedDebugSections: Set<BackendDebugSection> = []
 
-    private(set) var activeBackendJobs: [BackendJob] = []
-    private(set) var recentBackendJobs: [BackendJob] = []
+    let jobs = BackendJobStore()
     private(set) var latestDoctorResult: BackendStructuredResult?
     private(set) var latestDependencyResult: BackendStructuredResult?
     private(set) var dependencyBootstrapPhase: DependencyBootstrapPhase = .idle
@@ -387,27 +386,19 @@ final class AppViewModel {
             .appendingPathComponent("drive_c/Program Files (x86)/Steam/appcache/librarycache", isDirectory: true)
     }
 
-    var currentOperationJob: BackendJob? {
-        activeBackendJobs.first
-    }
-
     var sidebarStatus: SidebarStatus {
         SidebarStatus.resolve(
             preflight: backendPreflightState,
             setup: dependencyBootstrapPhase,
-            hasWork: hasActiveBackendWork,
+            hasWork: jobs.hasActiveWork,
             lastCheck: latestDoctorResult.map { healthStatus(from: $0) },
             profileReady: compatibilityProfileIsReady(.dxmt),
             usesExternalPrefix: !(backendContext.externalPrefix ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         )
     }
 
-    var hasActiveBackendWork: Bool {
-        activeBackendJobs.contains { [.queued, .started, .cancelling].contains($0.status) }
-    }
-
     var currentOperationResult: BackendStructuredResult? {
-        if let currentOperationJob {
+        if let currentOperationJob = jobs.current {
             switch currentOperationJob.action {
             case "Doctor", "Doctor + Fix":
                 return latestDoctorResult
@@ -2215,14 +2206,7 @@ final class AppViewModel {
         Task {
             do {
                 let response = try await BackendBridge.executeStreaming(.listJobs, context: backendContext) { _ in }
-                await MainActor.run {
-                    self.activeBackendJobs = response.jobs.filter {
-                        [.queued, .started, .cancelling].contains($0.status)
-                    }
-                    self.recentBackendJobs = Array(response.jobs.filter {
-                        ![.queued, .started, .cancelling].contains($0.status)
-                    }.prefix(12))
-                }
+                jobs.load(history: response.jobs)
             } catch {
                 // Job history is diagnostic; failure must not block the launcher.
             }
@@ -2230,10 +2214,10 @@ final class AppViewModel {
     }
 
     func cancelBackendJob(_ job: BackendJob) {
-        guard [.queued, .started, .cancelling].contains(job.status) else { return }
+        guard job.status.isActive else { return }
         Task {
             _ = try? await BackendBridge.executeStreaming(.cancelJob(id: job.id), context: backendContext) { _ in }
-            await MainActor.run { self.refreshBackendJobs() }
+            refreshBackendJobs()
         }
     }
 
@@ -2917,7 +2901,7 @@ final class AppViewModel {
                         launchURL: installURL
                     )
                 }
-                let hasActiveEpicOperation = activeBackendJobs.contains {
+                let hasActiveEpicOperation = jobs.active.contains {
                     $0.status == .started && $0.action.localizedCaseInsensitiveContains("Epic")
                 }
                 if !hasActiveEpicOperation {
@@ -3359,21 +3343,6 @@ final class AppViewModel {
         return .unknown
     }
 
-    private func beginBackendJob(for action: BackendAction, message: String? = nil) -> String {
-        let job = BackendJob(
-            id: UUID().uuidString,
-            action: actionDisplayName(action),
-            status: .started,
-            message: message ?? "\(actionDisplayName(action)) running...",
-            progress: nil,
-            completedSteps: nil,
-            totalSteps: nil
-        )
-        activeBackendJobs.removeAll { $0.action == job.action && $0.status == .started }
-        activeBackendJobs.insert(job, at: 0)
-        return job.id
-    }
-
     /// Run a backend action as a tracked job.
     ///
     /// Progress streams into the job list. When the backend finishes, the job is
@@ -3386,57 +3355,41 @@ final class AppViewModel {
         successMessage: String? = nil,
         completion: @escaping (Result<BackendResponse, Error>) -> Void
     ) {
-        let activeJobID = beginBackendJob(for: action, message: message)
+        let name = actionDisplayName(action)
+        let placeholderID = jobs.begin(actionName: name, message: message ?? "\(name) running...")
         Task {
             do {
                 let response = try await BackendBridge.executeStreaming(action, context: context) { update in
                     await MainActor.run {
-                        self.applyStreamUpdate(update, fallbackActiveJobID: activeJobID, action: action)
+                        self.applyStreamUpdate(update, placeholderID: placeholderID, action: action)
                     }
                 }
-                if let responseJob = response.job {
-                    reconcileDetachedJob(responseJob, fallbackActiveJobID: activeJobID)
-                } else {
-                    let message = successMessage ?? jobSuccessMessage(for: action)
-                    completeBackendJob(activeJobID, finalJob: makeFallbackJob(for: action, status: .completed, message: message))
-                }
+                // Detached launches report `completed` once the process is handed
+                // off; the launch session, not the job, tracks whether it runs.
+                let finalJob = response.job
+                    ?? makeFallbackJob(for: action, status: .completed, message: successMessage ?? jobSuccessMessage(for: action))
+                jobs.finish(placeholderID: placeholderID, with: finalJob)
                 completion(.success(response))
             } catch {
-                if activeBackendJobs.contains(where: { $0.id == activeJobID }) {
-                    let message = "\(actionDisplayName(action)) failed."
-                    completeBackendJob(activeJobID, finalJob: makeFallbackJob(for: action, status: .failed, message: message))
-                }
+                jobs.finish(
+                    placeholderID: placeholderID,
+                    with: makeFallbackJob(for: action, status: .failed, message: "\(name) failed.")
+                )
                 completion(.failure(error))
             }
         }
     }
 
     private func isActionRunning(_ action: BackendAction) -> Bool {
-        let name = actionDisplayName(action)
-        return activeBackendJobs.contains { job in
-            job.action == name && (job.status == .started || job.status == .queued)
-        }
+        jobs.isRunning(actionDisplayName(action))
     }
 
-    private func completeBackendJob(_ activeJobID: String, finalJob: BackendJob) {
-        activeBackendJobs.removeAll { $0.id == activeJobID }
-        recordBackendJob(finalJob)
-    }
-
-    private func applyStreamUpdate(_ update: BackendStreamUpdate, fallbackActiveJobID: String, action: BackendAction) {
+    private func applyStreamUpdate(_ update: BackendStreamUpdate, placeholderID: String, action: BackendAction) {
         if let structured = update.structured {
             mergeStructuredResult(structured, for: action)
         }
-
-        guard let job = update.job else { return }
-
-        switch job.status {
-        case .started, .queued, .cancelling:
-            activeBackendJobs.removeAll { $0.id == fallbackActiveJobID || $0.id == job.id || $0.action == job.action }
-            activeBackendJobs.insert(job, at: 0)
-        case .completed, .failed, .cancelled, .interrupted:
-            activeBackendJobs.removeAll { $0.id == fallbackActiveJobID || $0.id == job.id || $0.action == job.action }
-            recordBackendJob(job)
+        if let job = update.job {
+            jobs.apply(job, placeholderID: placeholderID)
         }
     }
 
@@ -3450,15 +3403,6 @@ final class AppViewModel {
             completedSteps: nil,
             totalSteps: nil
         )
-    }
-
-    private func recordBackendJob(_ job: BackendJob?) {
-        guard let job else { return }
-        recentBackendJobs.removeAll { $0.id == job.id }
-        recentBackendJobs.insert(job, at: 0)
-        if recentBackendJobs.count > 12 {
-            recentBackendJobs = Array(recentBackendJobs.prefix(12))
-        }
     }
 
     private func recordStructuredResult(_ structured: BackendStructuredResult?, for action: BackendAction) {
@@ -4006,14 +3950,6 @@ final class AppViewModel {
                     }
                 }
             }
-        }
-    }
-
-    private func reconcileDetachedJob(_ job: BackendJob, fallbackActiveJobID: String) {
-        // Detached launches report `completed` once the process is handed off;
-        // the launch session, not the job, tracks whether the game is running.
-        if activeBackendJobs.contains(where: { $0.id == fallbackActiveJobID }) {
-            completeBackendJob(fallbackActiveJobID, finalJob: job)
         }
     }
 
