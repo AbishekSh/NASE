@@ -156,5 +156,30 @@ class SteamLaunchTests(unittest.TestCase):
         terminate.assert_not_called()
 
 
+class GameExecutableTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.install_dir = Path(tempfile.mkdtemp(prefix="nase-exe-test-")) / "The Binding of Isaac Rebirth"
+        self.install_dir.mkdir()
+        (self.install_dir / "crash_uploader.exe").write_bytes(b"MZ" + b"\0" * 100)
+        (self.install_dir / "isaac-ng.exe").write_bytes(b"MZ" + b"\0" * 5000)
+
+    def test_steam_launch_config_names_the_executable(self) -> None:
+        (self.install_dir / "bin").mkdir()
+        (self.install_dir / "bin" / "game.exe").write_bytes(b"MZ")
+        with patch.object(steam, "windows_launch_executables", return_value=["bin\\game.exe"]):
+            chosen = steam.guess_game_executable(self.install_dir, "250900")
+        self.assertEqual(chosen, self.install_dir / "bin" / "game.exe")
+
+    def test_helper_tools_lose_to_the_game_without_launch_config(self) -> None:
+        with patch.object(steam, "windows_launch_executables", return_value=[]):
+            chosen = steam.guess_game_executable(self.install_dir, "250900")
+        self.assertEqual(chosen.name, "isaac-ng.exe")
+
+    def test_missing_configured_executable_falls_back_to_heuristic(self) -> None:
+        with patch.object(steam, "windows_launch_executables", return_value=["gone.exe"]):
+            chosen = steam.guess_game_executable(self.install_dir, "250900")
+        self.assertEqual(chosen.name, "isaac-ng.exe")
+
+
 if __name__ == "__main__":
     unittest.main()

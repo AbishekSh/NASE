@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import struct
-from typing import Any
+from typing import Any, Iterator
 
 
 PACKAGEINFO_MAGIC = 0x06565528
@@ -156,18 +156,29 @@ def owned_appids(steam_root: Path) -> tuple[set[int], list[str]]:
     return appids, []
 
 
-def app_info(steam_root: Path) -> tuple[dict[int, tuple[str, str]], list[str]]:
-    """Return ``{appid: (name, type)}`` from the client's app metadata cache."""
+def _iter_app_records(
+    steam_root: Path,
+    warnings: list[str],
+    appids: set[int] | None = None,
+) -> Iterator[tuple[int, dict[str, Any]]]:
+    """Yield ``(appid, appinfo)`` from the client's app metadata cache.
+
+    Only records in ``appids`` are decoded when it is given. Problems are
+    appended to ``warnings`` and end the iteration instead of raising.
+    """
     path = _appcache_path(steam_root, "appinfo.vdf")
     try:
         data = path.read_bytes()
     except OSError:
-        return {}, [f"Steam app cache is unreadable: {path}"]
+        warnings.append(f"Steam app cache is unreadable: {path}")
+        return
     if len(data) < 16:
-        return {}, [f"Steam app cache is too small to parse: {path}"]
+        warnings.append(f"Steam app cache is too small to parse: {path}")
+        return
     (magic,) = struct.unpack_from("<I", data, 0)
     if magic not in APPINFO_MAGICS:
-        return {}, [f"Unsupported Steam app cache format ({magic:#010x})."]
+        warnings.append(f"Unsupported Steam app cache format ({magic:#010x}).")
+        return
 
     string_table: list[str] | None = None
     end_of_records = len(data)
@@ -184,30 +195,72 @@ def app_info(steam_root: Path) -> tuple[dict[int, tuple[str, str]], list[str]]:
                 string_table.append(value)
             end_of_records = table_offset
         except (BinaryVDFError, struct.error) as exc:
-            return {}, [f"Steam app cache string table is unreadable ({exc})."]
+            warnings.append(f"Steam app cache string table is unreadable ({exc}).")
+            return
         offset = 16
     else:
         offset = 8
 
-    apps: dict[int, tuple[str, str]] = {}
-    warnings: list[str] = []
     try:
         while offset + 8 <= end_of_records:
             appid, size = struct.unpack_from("<II", data, offset)
             if appid == 0:
                 break
-            body = offset + 8 + _APP_HEADER_BYTES
-            node, _ = read_binary_kv(data, body, string_table)
-            root = node.get("appinfo") if isinstance(node.get("appinfo"), dict) else node
-            common = root.get("common") if isinstance(root.get("common"), dict) else {}
-            name = common.get("name")
-            app_type = common.get("type")
-            if isinstance(name, str) and name:
-                apps[appid] = (name, str(app_type or ""))
+            if appids is None or appid in appids:
+                body = offset + 8 + _APP_HEADER_BYTES
+                node, _ = read_binary_kv(data, body, string_table)
+                root = node.get("appinfo") if isinstance(node.get("appinfo"), dict) else node
+                yield appid, root
             offset += 8 + size
     except (BinaryVDFError, struct.error) as exc:
         warnings.append(f"Steam app cache ended unexpectedly ({exc}).")
+
+
+def app_info(steam_root: Path) -> tuple[dict[int, tuple[str, str]], list[str]]:
+    """Return ``{appid: (name, type)}`` from the client's app metadata cache."""
+    apps: dict[int, tuple[str, str]] = {}
+    warnings: list[str] = []
+    for appid, root in _iter_app_records(steam_root, warnings):
+        common = root.get("common") if isinstance(root.get("common"), dict) else {}
+        name = common.get("name")
+        app_type = common.get("type")
+        if isinstance(name, str) and name:
+            apps[appid] = (name, str(app_type or ""))
     return apps, warnings
+
+
+# Launch options that start something other than the game itself.
+_NON_GAME_LAUNCH_TYPES = {"server", "editor", "vr"}
+
+
+def windows_launch_executables(steam_root: Path, appid: str) -> list[str]:
+    """Return the game's Windows launch executables, in Steam's own order.
+
+    Paths are relative to the install directory as Steam stores them, so they
+    may use backslashes. Beta-only and server/editor/VR options are skipped.
+    An empty list means the cache had no usable launch configuration.
+    """
+    if not str(appid).isdigit():
+        return []
+    for _appid, root in _iter_app_records(steam_root, [], {int(appid)}):
+        config = root.get("config") if isinstance(root.get("config"), dict) else {}
+        launch = config.get("launch") if isinstance(config.get("launch"), dict) else {}
+        executables: list[str] = []
+        for key in sorted(launch, key=lambda item: int(item) if str(item).isdigit() else len(launch)):
+            entry = launch[key]
+            if not isinstance(entry, dict):
+                continue
+            entry_config = entry.get("config") if isinstance(entry.get("config"), dict) else {}
+            oslist = str(entry_config.get("oslist") or "")
+            if oslist and "windows" not in oslist.split(","):
+                continue
+            if entry_config.get("betakey") or str(entry.get("type") or "").lower() in _NON_GAME_LAUNCH_TYPES:
+                continue
+            executable = entry.get("executable")
+            if isinstance(executable, str) and executable:
+                executables.append(executable)
+        return executables
+    return []
 
 
 def owned_games(steam_root: Path) -> tuple[list[OwnedGame], list[str]]:

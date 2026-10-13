@@ -381,5 +381,61 @@ class LaunchSessionTests(unittest.TestCase):
         shutdown.assert_not_called()
 
 
+    def _steam_handoff_session(self, age_seconds: float) -> dict:
+        session = self._create("250900")
+        sessions.update_session(
+            session["session_id"],
+            strategy="steam-fallback",
+            started_at=time.time() - age_seconds,
+        )
+        return session
+
+    def test_steam_handoff_keeps_launching_while_steam_updates_the_game(self) -> None:
+        with (
+            patch.object(sessions, "_registry_path", return_value=self.registry),
+            patch.object(sessions, "reconcile_shared_steam_client"),
+            patch.object(sessions, "_processes", return_value={7: r"C:\Program Files (x86)\Steam\Steam.exe -silent"}),
+            patch.object(sessions, "_prefix_pids", return_value={7}),
+            patch.object(sessions, "_steam_has_active_work", return_value=True),
+        ):
+            session = self._steam_handoff_session(age_seconds=90)
+            reconciled = next(item for item in sessions.reconcile_sessions() if item["session_id"] == session["session_id"])
+
+        self.assertEqual(reconciled["status"], "launching")
+        self.assertIn("updating", reconciled["message"])
+
+    def test_steam_handoff_is_tracked_once_the_game_finally_starts(self) -> None:
+        steam_only = {7: r"C:\Program Files (x86)\Steam\Steam.exe -silent"}
+        with_game = {**steam_only, 8: r"C:\games\250900\game.exe"}
+        with (
+            patch.object(sessions, "_registry_path", return_value=self.registry),
+            patch.object(sessions, "reconcile_shared_steam_client"),
+            patch.object(sessions, "_processes", side_effect=[steam_only, with_game]),
+            patch.object(sessions, "_prefix_pids", return_value={7, 8}),
+            patch.object(sessions, "_steam_has_active_work", return_value=False),
+        ):
+            session = self._steam_handoff_session(age_seconds=90)
+            sessions.reconcile_sessions()
+            reconciled = next(item for item in sessions.reconcile_sessions() if item["session_id"] == session["session_id"])
+
+        self.assertEqual(reconciled["status"], "running")
+        self.assertEqual(reconciled["pids"], [8])
+
+    def test_steam_handoff_gives_up_when_steam_is_closed_or_after_the_cap(self) -> None:
+        for processes, age in (({}, 90), ({7: r"C:\Program Files (x86)\Steam\Steam.exe"}, sessions.STEAM_HANDOFF_GRACE_SECONDS + 1)):
+            with self.subTest(steam_running=bool(processes), age=age):
+                self.registry.unlink(missing_ok=True)
+                with (
+                    patch.object(sessions, "_registry_path", return_value=self.registry),
+                    patch.object(sessions, "reconcile_shared_steam_client"),
+                    patch.object(sessions, "_processes", return_value=processes),
+                    patch.object(sessions, "_prefix_pids", return_value=set(processes)),
+                    patch.object(sessions, "_steam_has_active_work", return_value=False),
+                ):
+                    session = self._steam_handoff_session(age_seconds=age)
+                    reconciled = next(item for item in sessions.reconcile_sessions() if item["session_id"] == session["session_id"])
+                self.assertEqual(reconciled["status"], "exited")
+
+
 if __name__ == "__main__":
     unittest.main()
