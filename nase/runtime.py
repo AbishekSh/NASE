@@ -24,6 +24,21 @@ SANITIZED_METAL_ENV_KEYS = (
     "DYLD_INSERT_LIBRARIES",
 )
 
+# Wine and helper output is copied to the terminal only in plain mode. With
+# --json or --jsonl, stdout carries the protocol, so that output goes only to
+# the command's log file; the app reads logs and result tails from there.
+_echo_subprocess_output = True
+
+
+def set_subprocess_echo(enabled: bool) -> None:
+    global _echo_subprocess_output
+    _echo_subprocess_output = enabled
+
+
+def _echo(text: str) -> None:
+    if _echo_subprocess_output:
+        sys.stdout.write(text)
+
 
 def ensure_dirs(*paths: Path) -> None:
     for path in paths:
@@ -81,7 +96,7 @@ def download(url: str, dest: Path) -> None:
     ensure_dirs(dest.parent)
     if dest.exists() and dest.stat().st_size > 0:
         return
-    print(f"Downloading {url} -> {dest}")
+    _echo(f"Downloading {url} -> {dest}\n")
     with urllib.request.urlopen(url) as response, dest.open("wb") as handle:
         shutil.copyfileobj(response, handle)
 
@@ -190,7 +205,7 @@ def run_logged(
             if timeout is not None:
                 output, _ = proc.communicate(timeout=timeout)
                 for line in (output or "").splitlines():
-                    sys.stdout.write(line + "\n")
+                    _echo(line + "\n")
                     handle.write(line + "\n")
                     tail_lines.append(line)
                     if len(tail_lines) > tail_max:
@@ -199,7 +214,7 @@ def run_logged(
                 exit_code = proc.returncode if proc.returncode is not None else 0
             else:
                 for line in proc.stdout:
-                    sys.stdout.write(line)
+                    _echo(line)
                     handle.write(line)
                     handle.flush()
 
@@ -224,14 +239,14 @@ def run_logged(
             except subprocess.TimeoutExpired:
                 output = ""
             for line in (output or "").splitlines():
-                sys.stdout.write(line + "\n")
+                _echo(line + "\n")
                 handle.write(line + "\n")
                 tail_lines.append(line)
                 if len(tail_lines) > tail_max:
                     tail_lines.pop(0)
             exit_code = 124
             message = f"\n[Timeout] Process exceeded {timeout}s and was killed.\n"
-            sys.stdout.write(message)
+            _echo(message)
             handle.write(message)
         finally:
             handle.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] EXIT: {exit_code}\n")

@@ -42,7 +42,14 @@ from .library_activity import acquire_steam_activity, assert_direct_launch_safe,
 from .legacy_directx import prepare_legacy_directx_overlay, reset_legacy_directx_overlay
 from .jobs import cancel_job, create_job, list_jobs, update_job
 from .profiles import PROFILES, bind_profile, list_profiles, mark_profile_ready, migrate_imported_d3dmetal_profiles
-from .runtime import detect_wine_runtime, is_apple_silicon, resolve_executable, resolve_with_fallback, run_logged
+from .runtime import (
+    detect_wine_runtime,
+    is_apple_silicon,
+    resolve_executable,
+    resolve_with_fallback,
+    run_logged,
+    set_subprocess_echo,
+)
 from .scanner import scan_game_dir
 from .state_files import atomic_write_json
 from .sessions import create_session, mark_steam_opened_by_user, reconcile_sessions, steam_is_running, stop_session, update_session
@@ -2484,6 +2491,7 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     os.environ.update(managed_gstreamer_environment())
+    set_subprocess_echo(not (getattr(args, "json", False) or getattr(args, "jsonl", False)))
 
     _JOB_TARGET = {
         "kind": "external-prefix" if getattr(args, "prefix", None) else "managed-bottle",

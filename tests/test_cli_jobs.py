@@ -172,6 +172,22 @@ class OutputModeTests(unittest.TestCase):
         self.assertIn("--wine64 is required", events[-1]["message"])
 
 
+    def test_jsonl_stdout_carries_only_protocol_lines(self) -> None:
+        def handler_running_wine(args) -> None:
+            out = cli.Output(args, "kill-wine")
+            out.start("Stopping")
+            code, tail = cli.run_logged(cmd=["/bin/echo", "wineserver: noise"], env=None, log_file=self.root / "wine.log")
+            out.done("Stopped.", data={"tail": tail})
+
+        try:
+            events, code = run_main(["kill-wine"], cmd_kill_wine=handler_running_wine)
+        finally:
+            cli.set_subprocess_echo(True)
+        self.assertEqual(code, 0)
+        self.assertEqual([event["event"] for event in events], ["job", "result"])
+        self.assertIn("wineserver: noise", events[-1]["data"]["tail"])
+
+
 class SteamHandoffTests(unittest.TestCase):
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp(prefix="nase-cli-handoff-test-"))
