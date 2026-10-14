@@ -120,8 +120,11 @@ import Testing
         atomically: true,
         encoding: .utf8
     )
-    let suiteName = "NASEDataPathsTests.\(UUID().uuidString)"
+    // A fixed name: macOS keeps an empty plist per suite name even after
+    // `removePersistentDomain`, so a UUID here left a new file on every run.
+    let suiteName = "NASETests.DataPathsMigration"
     let defaults = try #require(UserDefaults(suiteName: suiteName))
+    defaults.removePersistentDomain(forName: suiteName)
     defaults.set(
         legacy.appendingPathComponent("runtimes/wine/bin/wine").path,
         forKey: "backend.winePath"
